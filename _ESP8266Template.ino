@@ -6,27 +6,26 @@
 
  Features:
 	Rich serial menu interface
-	EEPROM storage of SSID, Password, Static IP, Static Subnet, and Static Gateway
+	Stores website login credentials in salted hash on EEPROM
+	SPIFFS Storage of config.json for network settings, project name, and sensor scaling(calibration data)
 	Access Point automatically created when WiFi not configured
-	Wegpage allows configuration of network settings
+	Wegpage allows viewing of data, configuring network settings, viewing system data, editing files in SPIFFS, and more
 	Telnet / RAW ethernet responses
-	ai->precisionRaw = setPrecision(ai->rawLo,ai->rawHi);
-	ai->precision = setPrecision(ai->scaleLo, ai->scaleHi);
 
 Checklist for project creation/instantiation:
 	Update #define CONTACT_INFORMATION
-	Run ESPeraseConfig from serial menu
+	Run Factory Defaault  from serial menu
 	Modify Functional Description and contact information in Help menu
 	Update ProjectName, STASSID, STAPassword, and STAhostname
 	Comment out #DEBUG
-	After download, clear out EEPROM
+	After download, run Factory Default
 	Reboot to ensure the AP is started
 	Clearout ThingSpeak configuration, and reset the #define for it
 	Update help menu telnet command to be specific to project
 	Update webpage Data page to be specific to project
 	Update scaling factors
 
-Checklist for distribution
+Checklist for distribution to github
 	Delete BACKDOOR_PASSWORD, CONTACT_INFORMATION, SSID, PAssword, Thingspeak information
 	delete sha1salt
 
@@ -104,7 +103,7 @@ Untested:
 	String ProjectName = "DefaultProjectName"; //The WiFi hostname is taken from this, do not use any symbols or puncuation marks, hyphens are fine, and spaces will be automatically replaced with underscores
 	const char* ProjectNameptr;
 	#define	FUNCTIONAL_DESCRIPTION "This device contains a base Template with a webpage, telnet, and Serial>USB access to data"
-	#define	CONTACT_INFORMATION "Terry Myers: TerryJMyers@gmail.com, 215.262.4148"
+	#define	CONTACT_INFORMATION "Terry Myers: TerryJMyers@gmail.com"
 	uint32_t __UPTIME; //System up time in seconds
 	String GlobalString; //used to pass large string data from routine to routine
 	String GlobalErrorString; //used to enunciate errors on webpage
@@ -113,7 +112,7 @@ Untested:
 	#define CONFIGJSONFILZESIZE 1024
 
 //telnet server (socket connections)
-	#define BACKDOOR_PASSWORD "4t6j364t" //used for telnet login and as the "user name" field on webpage
+	#define BACKDOOR_PASSWORD "BACKDOORPASSWORD" //used for telnet login and as the "user name" field on webpage
 	#define TELNET_MAX_CLIENTS 5 //probably never need more than 1, but its here nonetheless
 	#define TELNETPORT 23 //default is 23
 	WiFiServer TelnetServer(TELNETPORT);
@@ -142,9 +141,9 @@ Untested:
 	//WiFi Client
 		#ifdef THINGSPEAK
 			WiFiClient ThingSpeakClient;
-			unsigned long ThingSpeakChannel = 221059;
+			unsigned long ThingSpeakChannel = 999999;
 			const char* ThingSpeakserver = "api.thingspeak.com";
-			const char* ThingSpeakapiKey = "UZFDX98NEDHEZJ21";
+			const char* ThingSpeakapiKey = "APIKEY";
 		#endif // THINGSPEAK
 	//Station Mode default configuration, overwritten by config.json
 		IPAddress STAip(192, 168, 1, 250);
@@ -1008,6 +1007,7 @@ String ProcessTextCommand(String s) {
 				if (aStringParse[1] == F("wifigetmode")) { sReturn = String(WiFi.getMode()); b = true; }
 				if (aStringParse[1] == F("eepromprint")) { sReturn = EEPROMPrint();  b = true;}
 				if (aStringParse[1] == F("eepromclear")) { sReturn = EEPROMClear();  b = true; }
+				if (aStringParse[1] == F("factoryreset")) { FactoryReset(); }
 				if (aStringParse[1] == F("eepromclearhtmllogin")) { sReturn = EEPROMClearHTMLLogin();  b = true; }
 				if (aStringParse[1] == F("esperaseconfig")) { ESP.eraseConfig();  Restart();}
 				if (aStringParse[1] == F("debug")) {
@@ -1419,6 +1419,7 @@ String HelpMenu(void) {
 	temp += F("\t\t'debug' - to turn debugging code on/off\n\r");
 	temp += F("\t\t'EEPROMPrint' - print out entire EEPROM for debug purposes\n\r");
 	temp += F("\t\t'EEPROMClear' - Clear out entire EEPROM for debug purposes\n\r");
+	temp += F("\t\t'FactoryReset' - Clear out entire EEPROM, reset config.json, and clearout ESP configuration\r");
 	temp += F("\t\t'ESPeraseConfig' - Clear out the protected section of memory that saves the ESP configuration: SSID and wifi password\n\r");
 	temp += F("\t\t'eepromclearHTMLLogin' - Clear out the section of memory that saves the Webpage login and reverts back to admin/admin\n\r");
 	temp += F("\t\t'wifigetmode' - prints out the return of WiFi.getMode()\n\r");
