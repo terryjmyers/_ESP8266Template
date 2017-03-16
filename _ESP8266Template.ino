@@ -1,60 +1,56 @@
 /*
- _ESP8266Template
+_ESP8266Template
  v1.4
  Terry Myers <TerryJMyers@gmail.com>
  https://github.com/terryjmyers/_ESP8266Template.git
 
  Features:
-	Rich serial menu interface
+	Serial command interface
+	Telnet command interface, (login required)
+	Serial and telnet commands share common interface
 	Stores website login credentials in salted hash on EEPROM
-	SPIFFS Storage of config.json for network settings, project name, and sensor scaling(calibration data)
+	SPIFFS Storage of config.json for network settings, project name, and sensor scaling(calibration data), NTP settings, etc
 	Access Point automatically created when WiFi not configured
 	Wegpage allows viewing of data, configuring network settings, viewing system data, editing files in SPIFFS, and more
-	Telnet / RAW ethernet responses
+	NTP integrated with time zone offset and DST calculations
+	SMTP email
 
 Checklist for project creation/instantiation:
+	From Arduino IDE upload all files in the /data folder from ArduinoIDE/tools/ESP8266 Sketch Data Upload menu selection.
+		To install this feature, reference section "Uploading files to file system" on: https://github.com/esp8266/Arduino/blob/master/doc/filesystem.md#uploading-files-to-file-system
 	Update #define CONTACT_INFORMATION
-	Run Factory Defaault  from serial menu
 	Modify Functional Description and contact information in Help menu
-	Update ProjectName, STASSID, STAPassword, and STAhostname
-	Comment out #DEBUG
-	After download, run Factory Default
+	Update default ProjectName, STASSID, STAPassword, and STAhostname
+	Comment out "#define DEBUG"
+	Comment out  "#define THINGSPEAK"
+	Download program
+	run Reset Factory Default from serial menu
 	Reboot to ensure the AP is started
-	Clearout ThingSpeak configuration, and reset the #define for it
 	Update help menu telnet command to be specific to project
 	Update webpage Data page to be specific to project
 	Update scaling factors
 
 Checklist for distribution to github
-	Delete BACKDOOR_PASSWORD, CONTACT_INFORMATION, SSID, PAssword, Thingspeak information
-	delete sha1salt
+	Update BACKDOOR_PASSWORD, CONTACT_INFORMATION, email info
+	replace sha1salt
 
 Issues:
-	Hostname does not work.  Test that the hostname is taken from the Project name and replaced spaces with underscores
-	Why is the Data webpage text so large on mobile?
-
+	mDNS responder isn't working
 
 TODO:
 	Create reset button that will trigger a hardware reset with a specific output
 	Test the checklist above
 	Add commands to serial to turn off webpage and/or AP
-	Add option for DHCP
 	Automatically start the AP if you toggle the WiFi off.default
 	Perhaps make an RUSure page when toggleing WiFi off.
 	Checkout Thinger.io to see if it can be used
-	Encrypt SSID, Password using XOR and one time pad
-	Add calibration factors
 	Enable/disable telnet through webpage
-	Add NTP capability and add time to webpage
-	Replace string st with GlobalString
-	Move wifi info and data configuration to SPIFFS
-	Clean up the SPIFFS editor serial printing, add to debug stuff and F() it
 	Create an error 500 webpage
-	The file explorer/editor webpage seems to use an external js file hosted on the web.  See if it works when the ESP8266 is offline
-	Create link /edit
-	Create new page for the graphs
-	Consider getting rid of the automatic DOWNLOAD link where someone coudl just type in a file name and get it
-	Automatically selet the connected wifi on the website by using the text selected="selected": eg <option selected="selected">.  I will need to figure out which it is in the scan networks function and somehow pass this on
+	Set up an unencrypted email address
+	Split out admin page its getting too much.
+	Split out sensor scaling to another page
+	Add ability to update thingspeak credentials throgh webpage
+	Add ability to add email addres / sms text through webpage
 
 Untested:
 	
@@ -62,14 +58,14 @@ Untested:
 
 //Modify section of the code to suit a project:
 //#define DEBUG //developer debug
-//#define THINGSPEAK
+#define THINGSPEAK
 
 //Includes
-		#ifdef THINGSPEAK
-			#include <ThingSpeak.h>
-		#endif // THINGSPEAK
-	#include <LoopStatistics.h> //https://github.com/terryjmyers/LoopStatistics.git
-	#include <PulseTimer.h> //https://github.com/terryjmyers/PulseTimer.git
+	#ifdef THINGSPEAK
+		#include <ThingSpeak.h>
+	#endif // THINGSPEAK
+	#include <LoopStatistics.h> //personal Loop statistics library.  calculates min/max loop time as well as loops per sec to measure program performance: https://github.com/terryjmyers/LoopStatistics.git
+	#include <PulseTimer.h> //personal timer library.  Used to create pulses bits for timing: https://github.com/terryjmyers/PulseTimer.git
 	#include <ESP8266WiFi.h>
 	#include <ESP8266WebServer.h>
 	#include <ESP8266mDNS.h>
@@ -77,43 +73,57 @@ Untested:
 	#include <ESP8266HTTPClient.h>
 	#include <EEPROM.h>
 	#include <Hash.h>
-	#include <ArduinoJson.h>
+	#include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 	#include <FS.h>
-	#include <Wire.h> 
+	#include <Wire.h>
+	#include <TimeLib.h> //used for NTP, modified library to account for daylight savings time and timezone inputs: https://github.com/terryjmyers/TimeLib.git
+	#include <ticker.h> //used for WatchDog
+	//#include <LPF.h> //personal Low Pass Filter Library
+	#include <DHT.h> 
+		/*
+		Adafruit DHT22 library is not optimized for speed.  The following changes were made in accordance with the datasheet:
+		DHT.cpp
+			lines 140 commented out - "//digitalWrite(_pin, HIGH);"
+			line 141 commented out - "//delay(250)"
+			line 146 delay after digitalWrite(_pin, LOW) lowered to 10ms from 20- "delay(10)"
 
-	#include <LPF.h>
-	#include <DHT.h>
+			e.g. lines 140 to 146 should look like this:
+				digitalWrite(_pin, HIGH);
+				delay(1);
+
+				// First set data line low for 20 milliseconds.
+				pinMode(_pin, OUTPUT);
+				digitalWrite(_pin, LOW);
+				delay(1);
+		*/
 	#include <DHT_U.h>
 
 
-
-
 //DHT22 stuff
-	#define DHTPIN 0     // what digital pin we're connected to
+	#define DHTPIN 0     // what digital pin we're connected to pin 0 = GPIO0 = D3 on nodeMCU/wemos
 	#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 	DHT dht(DHTPIN, DHTTYPE);
-	float temperature;
-	float humidity;
-
-	LPF01 LPFTemp;
-	LPF01 LPFHum;
+	//LPF01 LPFs; 
+	//LPF01 LPFHum;
 
 //Project Settings
-	#define FirmwareVersion "1.4";
+#define FirmwareVersion "1.6";
 	String ProjectName = "DefaultProjectName"; //The WiFi hostname is taken from this, do not use any symbols or puncuation marks, hyphens are fine, and spaces will be automatically replaced with underscores
-	const char* ProjectNameptr;
-	#define	FUNCTIONAL_DESCRIPTION "This device contains a base Template with a webpage, telnet, and Serial>USB access to data"
-	#define	CONTACT_INFORMATION "Terry Myers: TerryJMyers@gmail.com"
-	uint32_t __UPTIME; //System up time in seconds
-	String GlobalString; //used to pass large string data from routine to routine
-	String GlobalErrorString; //used to enunciate errors on webpage
-	uint8_t GlobalErrorCode; //used to enunciate errors on webpage
+	const char * FUNCTIONAL_DESCRIPTION = "This device contains a base slate with a webpage, telnet, and Serial to USB access to data";
+	const char * CONTACT_INFORMATION = "Terry Myers: TerryJMyers@gmail.com, XXX.XXX.XXXX";
+	uint32_t __UPTIME; //System up time in seconds, displayed on Admin webpage
+	String GlobalErrorMessage; //used to enunciate errors on webpage
+	uint8_t debug; //debugging bit able to be turned on and off from serial/telnet console
 
-	#define CONFIGJSONFILZESIZE 1024
+//configuration Json buffer 
+	#define CONFIGJSONFILZESIZE 2048
+//Watchdog
+	Ticker OneSecondTick;
+	volatile uint32_t WatchDog = 0;
 
 //telnet server (socket connections)
-	#define BACKDOOR_PASSWORD "BACKDOORPASSWORD" //used for telnet login and as the "user name" field on webpage
-	#define TELNET_MAX_CLIENTS 5 //probably never need more than 1, but its here nonetheless
+	#define BACKDOOR_PASSWORD "backdoor" //back door password used for wegpage login and telnet login.  Used as the User Name field, password doens't matter
+	#define TELNET_MAX_CLIENTS 2 //probably never need more than 1, but its here nonetheless
 	#define TELNETPORT 23 //default is 23
 	WiFiServer TelnetServer(TELNETPORT);
 	struct TelnetServerClients { //custom struct to handle each client data and login information independantly
@@ -127,25 +137,21 @@ Untested:
 		bool NewLine;
 	};
 	struct TelnetServerClients Telnet[TELNET_MAX_CLIENTS];
-
+	
 //Web servers
 	#define HTTPPORT 80
 	ESP8266WebServer HTTPserver(HTTPPORT);
-	bool isWebInitialized = false;
 	File fsUploadFile; //Global file object for uploads
+	uint8_t refresh;
 
-//Hash salt for webpage login
-	const char sha1salt[17] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
 //wifi setup
-
 	//WiFi Client
-		#ifdef THINGSPEAK
-			WiFiClient ThingSpeakClient;
-			unsigned long ThingSpeakChannel = 999999;
-			const char* ThingSpeakserver = "api.thingspeak.com";
-			const char* ThingSpeakapiKey = "APIKEY";
-		#endif // THINGSPEAK
-	//Station Mode default configuration, overwritten by config.json
+
+		bool ThingSpeakEnable = false;
+		WiFiClient ThingSpeakClient;
+		unsigned long ThingSpeakChannel = 0;
+		String ThingSpeakapiKey = "none";
+	//Station Mode default configuration, overwritten by network configuration stored in config.json in SPIFFS
 		IPAddress STAip(192, 168, 1, 250);
 		IPAddress STAsubnet(255, 255, 255, 0);
 		IPAddress STAgateway(192, 168, 1, 1);
@@ -157,76 +163,116 @@ Untested:
 		//Create some structs to make human readable messages
 			String encryptionTypeStr(uint8_t authmode) {
 				switch (authmode) {
-				case ENC_TYPE_NONE:
-					return "OPEN";
-				case ENC_TYPE_WEP:
-					return "WEP";
-				case ENC_TYPE_TKIP:
-					return "WPA_PSK";
-				case ENC_TYPE_CCMP:
-					return "WPA2_PSK";
-				case ENC_TYPE_AUTO:
-					return "WPA_WPA2_PSK";
-				default:
-					return "UNKOWN";
+					case ENC_TYPE_NONE:
+						return F("OPEN");
+					case ENC_TYPE_WEP:
+						return F("WEP");
+					case ENC_TYPE_TKIP:
+						return F("WPA_PSK");
+					case ENC_TYPE_CCMP:
+						return F("WPA2_PSK");
+					case ENC_TYPE_AUTO:
+						return F("WPA_WPA2_PSK");
+					default:
+						return F("UNKOWN");
 				}
 			}
 			String BootModeStr(uint8_t authmode) {
 				switch (authmode) {
-				case FM_QIO:
-					return "FM_QIO";
-				case FM_QOUT:
-					return "FM_QOUT";
-				case FM_DIO:
-					return "FM_DIO";
-				case FM_DOUT:
-					return "FM_DOUT";
-				case FM_UNKNOWN:
-					return "FM_UNKNOWN";
-				default:
-					return "UNKOWN";
+					case FM_QIO:
+						return F("FM_QIO");
+					case FM_QOUT:
+						return F("FM_QOUT");
+					case FM_DIO:
+						return F("FM_DIO");
+					case FM_DOUT:
+						return F("FM_DOUT");
+					case FM_UNKNOWN:
+						return F("FM_UNKNOWN");
+					default:
+						return F("UNKOWN");
 				}
 			}
+	//email setup
+			//Adapted from Boris Shobat http://www.instructables.com/id/ESP8266-GMail-Sender/?ALLSTEPS
+				class Gsender
+				{
+					protected:
+						Gsender();
+					private:
+						const int SMTP_PORT = 465;
+						const char* SMTP_SERVER = "smtp.gmail.com";
+						const char* EMAILBASE64_LOGIN = "ABASE64EMAILADDRESS="; //ESP8266tjm@gmail.com
+						const char* EMAILBASE64_PASSWORD = "ABASE64PASSWORD="; //4t6j364t
+						const char* FROM = "YOUREMAILADDRESS@gmail.com";
+						const char* _error = nullptr;
+						char* _subject = nullptr;
+						String _serverResponce;
+						static Gsender* _instance;
+						bool AwaitSMTPResponse(WiFiClientSecure &client, const String &resp = "", uint16_t timeOut = 10000);
 
-//Configure EEPROM
+					public:
+						static Gsender* Instance();
+						Gsender* Subject(const char* subject);
+						Gsender* Subject(const String &subject);
+						bool Send(const String &to, const String &message);
+						String getLastResponce();
+						const char* getError();
+				};
+				Gsender* Gsender::_instance = 0;
+				Gsender::Gsender() {}
+				String EmailAddress = "RECEIVERSEMAILADDRESS@gmail.com";
+			
+		
+		
+	//NTP
+		String timeStamp;
+		unsigned int localPort = 2390;      // local port to listen for UDP packets
+		IPAddress timeServerIP; // time.nist.gov NTP server address
+		//const char *ntpServerName = "time.nist.gov"; //NTP 
+		String NTPServerName = "time.nist.gov"; //NTP 
+		const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+		byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+		WiFiUDP udp; // A UDP instance to let us send and receive packets over UDP
+		int NTPTimeZone = -5;  // Eastern Standard Time (USA)
+		uint8_t NTPdstRule;
+		bool NTPDaylightSavings = true;  // account for US daylight savings: 2am on second sunday in March, ends at 2am on first Sunday in November
+		uint32_t NTPUpdateRate = 86000;//Set how often to update time in seconds: almost once a day was choosen to get the time at different times of the day or randomness
+			
+		
+			//Configure EEPROM
+	//EEPROM is used for storing a sha1 hash of the website login/password that is salted
+	//EEPROM Map: |WEBSITELOGINsha1HASHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxWEBSITEPASSWORDsha1HASHxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxxDEBUGBYTE|
 	#define EEPROMSIZE 512
-	#define EEPROMNetworkConfigured EEPROMSIZE-2 //store a bit in the EEPROM to determine if the WiFi is configured properly.
-	#define EEPROMDebug EEPROMSIZE-3 //store a bit in the EEPROM to determine if debugging is on or not.
-		enum isEEPROMNetworkConfigured {
-			EEPROMNetworkConfigured_YES = 0,
-			EEPROMNetworkConfigured_NO = 255
-		};
 		enum isEEPROMDebug {
 			EEPROMDebug_YES = 0,
 			EEPROMDebug_NO = 255
 		};
-	//configure EEPROM
-		//const char STAPasswordOneTimePad[65] = { 0xe3, 0x93, 0xb2, 0x69, 0xdc, 0x66, 0x54, 0x14, 0x4b, 0x81, 0x8e, 0xb1, 0x19, 0x42, 0xb4, 0xa7, 0xe4, 0xea, 0x7f, 0xbd, 0x36, 0xa7, 0xd4, 0x05, 0x9d, 0x91, 0xce, 0xab, 0xa6, 0xe4, 0x09, 0x84, 0x44, 0xf5, 0xe8, 0xfd, 0xd2, 0x29, 0x59, 0x63, 0x19, 0x0e, 0x40, 0xf2, 0x5e, 0xb9, 0x3d, 0xf, 0x2e, 0x19, 0x00, 0xaf, 0x5b, 0xed, 0x6d, 0x3b, 0x47, 0x35, 0x6e, 0x83, 0xfe, 0x44, 0x9b, 0xc3 };
-		//Website Login Name
-			const uint16_t EEPROMHTMLLoginSTART = 0;
-			const uint16_t EEPROMHTMLLoginEND = EEPROMHTMLLoginSTART + 40;
-			char HTMLDefaultLogin[6] = "admin"; //used as login name and password
+		//salt bytes added to plain text website login/password to salt the text before hashing using sha1 and storing in EEPROM.  The program never really knows the login/password
+				const char sha1salt[17] = { 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01 };
+		//EEPROM Map setup, store the start/end byte of everything to make storing and retriving easier
+			//Website Login Name
+				const uint16_t EEPROMHTMLLoginSTART = 0;
+				const uint16_t EEPROMHTMLLoginEND = EEPROMHTMLLoginSTART + 40;
+				const char *HTMLDefaultLogin = "admin"; //used as default login name and password when the EEPROM reads back a 255 byte in the first byte(indicative of the login never having changed i.e. EEPROM is blank)
+			//Website Login Password
+				const uint16_t EEPROMHTMLPasswordSTART = EEPROMHTMLLoginEND + 1;
+				const uint16_t EEPROMHTMLPasswordEND = EEPROMHTMLPasswordSTART + 40;
+			#define EEPROMDebug EEPROMSIZE-1 //store a "bit" in the EEPROM to determine if debugging is on or not. which sets a bit called "debug" used throughout the code
 
-		//Website Login Password
-			const uint16_t EEPROMHTMLPasswordSTART = EEPROMHTMLLoginEND + 1;
-			const uint16_t EEPROMHTMLPasswordEND = EEPROMHTMLPasswordSTART + 40;
-
-//Serial Read tags - delete if not doing Serial Reads, Also delete fucntions SerialMonitor and SerialEvent
-	#define STRINGARRAYSIZE 8 //Array size of parseable string
-	#define SERIAL_BUFFER_SIZE 64
-	String sSerialBuffer; //Create a global string that is added to character by character to create a final serial read
-	String sLastSerialLine; //Create a global string that is the Last full Serial line read in from sSerialBuffer
-
-//debug stuff
-	byte debug = EEPROMNetworkConfigured_NO; //software debug bit that can be modified via serial port while program is running 
+//Serial Read tags
+	//serial text is read in and parsed into acomma separated variable array
+	#define SERIAL_BUFFER_SIZE 128 //max size of ESP8266 serial buffer
+	String sSerialBuffer; //Software serial buffer
+	String sLastSerialLine; //sSerialBuffer is copied into this tag when a \r, \n, or \0 character is receieved.  The text is processed then cleared out as a handshake
 
 //Setup a instance of LoopStatistics
 	#ifdef DEBUG
 	LoopStatistics LT;
 	#endif
 
-//Set up the PRE for the pulse timers.  Note that the closest prime number was choosen to prevent overlapping with other timers
-	PulseTimer _60000ms(60000);
+//Set up the preset timer for the pulse timers.  Note that the closest prime number was choosen to prevent overlapping with other timers
+	PulseTimer _60000ms(59999);
 	PulseTimer _10000ms(9979);
 	PulseTimer _1000ms(997);
 	PulseTimer _500ms(499);
@@ -234,7 +280,8 @@ Untested:
 	//PulseTimer _10ms(11);
 	//PulseTimer _1ms(1);
 
-//Project Specific Data configuration
+//Project Specific sensor scaling/configuration Data.  Sensor data is loaded into .raw, scaling using y=mx+b scaling using .rawLo, .rawHi, .scaleLo, and .scaleHi, and moved into .Actual
+//These values are stored in config.json.txt on SPIFFS
 	struct AI {
 		float raw;
 		float rawLo;
@@ -243,19 +290,40 @@ Untested:
 		float scaleHi;
 		float Actual;
 		String EngUnits;
-		uint8_t precisionRaw;//number of decimals places for Raw units
-		uint8_t precision;
+		uint8_t precisionRaw;//not stored in config.json.txt on SPIFFS: number of decimals places to display for Raw units, automatically calculated based on range to provide a minimum of 32767 steps regardless of actual range
+		uint8_t precision;  //nnot stored in config.json.txt on SPIFFS: number of decimals places to display for Actual units, automatically calculated based on range to provide a minimum of 32767 steps regardless of actual range
 	};
-	struct AI Data[3];
+	struct AI Data[3]; //create three instances for up to 3 pieces of data to be scaled
 
 //SETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUP
 	void setup() {
+
+		//Reserve String space to assist with heap fragmentation and optimization
+			ProjectName.reserve(32);
+			GlobalErrorMessage.reserve(256);
+			timeStamp.reserve(19);
+			Telnet[0].clientBuffer.reserve(64);
+			Telnet[0].clientLastLine.reserve(64);
+			Telnet[0].login.reserve(32);
+			Telnet[0].password.reserve(32);
+			Telnet[1].clientBuffer.reserve(64);
+			Telnet[1].clientLastLine.reserve(64);
+			Telnet[1].login.reserve(32);
+			Telnet[1].password.reserve(32);
+			Data[0].EngUnits.reserve(5);
+			Data[1].EngUnits.reserve(5);
+			Data[2].EngUnits.reserve(5);
+			EmailAddress.reserve(50);
+			NTPServerName.reserve(32);
+
+		//Setup WatchDog ISR
+			OneSecondTick.attach(1, ISRWatchdog);
 		//Setup Serial 
-		//In case the user uses the default setting in Arduino, give them a message to change BAUD rate
+		//In case the user uses the default setting, give them a message to change BAUD rate
 			Serial.begin(9600);
-			Serial.println("Set baud rate to 250 000");
+			Serial.println(F("Set baud rate to 250 000 and restart"));
 			Serial.flush();   // wait for send buffer to empty
-			delay(2);    // let last character be sent
+			delay(2);    // needed for the last line feed character to be sent for some reason
 			Serial.end();      // close serial
 		//Setup Serial
 			Serial.begin(250000);
@@ -265,310 +333,269 @@ Untested:
 		sSerialBuffer.reserve(SERIAL_BUFFER_SIZE);
 		sLastSerialLine.reserve(SERIAL_BUFFER_SIZE);
 
-		if (!SPIFFS.begin()) EndProgram(F("Failed to start SPIFFS "));
+		if (!SPIFFS.begin()) EndProgram(F("Failed to start SPIFFS ")); 
 
 		loadConfig();//load config.json.txt from SPIFFS
 
 		EEPROMStart(); //start EEPROM
 
-
-		dht.begin();
-
-		//IOSetup(); //setup IO pins
-
+		dht.begin(); //Iitiate the DHT22 sensor
+		
 		//Initialize Wifi Stuff
 			WiFi.hostname(ProjectName); //update the hostname
-			//wifiCheckConfig(); //check to see if Wifi has been configured once, if not start the WiFi AP
-			if (bitRead(WiFi.getMode(), 0)) { WiFiSetup(); } //if Station mode is on, connect to a network			
-			if (bitRead(WiFi.getMode(), 1)) { StartAP(); } //if AP mode is on, initialize the AP
-			if (WiFi.getMode() > 0) { launchWeb(); }
+			if (bitRead(WiFi.getMode(), 0))		WiFiSetup();  //if Station mode is on (stored in the protected ESP8266 flash memory), connect to a network			
+			if (bitRead(WiFi.getMode(), 1))		StartAP();  //if AP mode is on (stored in the protected ESP8266 flash memory), initialize the AP
+			if (WiFi.getMode() > 0)				launchWeb(); 
 
+		//Initialzize udp for NTP
+			if (WiFi.status() == WL_CONNECTED) {
+				Serial.print(Line());
+				udp.begin(localPort);
+				setSyncProvider(getNtpTime);
+				setTimeZone(NTPTimeZone);
+				setdstRule(NTPdstRule);
+				Serial.print(F("Time is ")); Serial.println(updatetimeStamp());
+			}
 
 		//Start Telnet Server
-		if (bitRead(WiFi.getMode(), 0)) {
-			TelnetServer.begin();
-			TelnetServer.setNoDelay(true);
-			Serial.print(F("Telnet / RAW Ethernet server started at: <"));
-			Serial.print(WiFi.localIP());
-			Serial.print(F(":"));
-			Serial.print(TELNETPORT);
-			Serial.println(F(">"));
-		}
+			if (WiFi.getMode() > 0) { //if any WiFi is on, Station or AP, turn on the telnet server
+				TelnetServer.begin();
+				TelnetServer.setNoDelay(true);
+			}
 
 	#ifdef THINGSPEAK
-		if (bitRead(WiFi.getMode(), 0)) {ThingSpeak.begin(ThingSpeakClient);}
+		if (ThingSpeakEnable && bitRead(WiFi.getMode(), 0)) {ThingSpeak.begin(ThingSpeakClient);}
 	#endif
-	//initialize a simulation floating point for testing
-	//int t = random(4000, 8000);
-	//Data[1].raw = (float)t / 100.0;
-
 
 	Serial.print(WelcomeMessage());	//print a welcome message
-	
+
+	//sendEmail();
 }
 //SETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUPSETUP
-
-
+	
 //MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
 //MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
 void loop() {
+	WatchDog = 0;//Feed the watchdog
 
-	loopIDLE();//handle stuff that happens in all modes
-	
-}
-//MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
-//MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
-//===============================================================================================
-void loopIDLE(void) {
-	//Do stuff in here while waiting.  This is called during loop, but also during other while loops to ensure that serial commands are always honored
-	ProcessTelnetCommands(); //handle ll telnet requests
-	ProcessSerialCommands(); //Respond to serial commands
-	HTTPserver.handleClient(); //handle all HTTP requests
-	
-	//Update pulse timers
+	ProcessTelnetCommands();	//handle all telnet requests
+	ProcessSerialCommands();	//handle all serial requests
+	HTTPserver.handleClient();	//handle all HTTP requests
+	ProcessErrorMessage();
+
+	 //Update pulse timers
 		_1000ms.tick();
 		_500ms.tick();
 		_60000ms.tick();
-		_10000ms.tick();
+		_10000ms.tick();	//Update sensor data
 
-	//update a simulation point
-		if (_1000ms.pulse()) {
+	//Update sensor data
+		if (_10000ms.pulse()) {
 			ReadInputs();
-
-			Serial.print(Data[0].Actual);	Serial.print("F\t");	Serial.print(Data[1].Actual);	Serial.print("%RH");
-			Serial.println();
-			UpdateThingSpeak();
+			if (debug == EEPROMDebug_YES) { Serial.print(Data[0].Actual); Serial.print(Data[0].EngUnits); Serial.print("\t"); Serial.print(Data[1].Actual);  Serial.print(Data[1].EngUnits); Serial.println(); }
+			UpdateThingSpeak(); //if thingspeak is not initialized this will just return
 		}
 	//increment __UPTIME
-		if (_1000ms.pulse()) __UPTIME++; 
-
-		#ifdef DEBUG
+		if (_1000ms.pulse()) __UPTIME++;
+		//if (_1000ms.pulse()) Serial.println(updatetimeStamp());
+		
+	#ifdef DEBUG
 		if (_1000ms.pulse()) { LT.printStatistics(); }
 		LT.tick();
-		#endif
+	#endif
+	//Yield to the ESP8266's background processes
+		yield(); //Not sure if this is really necessesary, seems to work fine without it, but it feels really good!
+}
+//MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
+//MAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOPMAINLOOP
+void sendEmail() {
+	Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
+	//String subject = "Subject is optional!";
+	if (gsender->Subject(ProjectName)->Send(EmailAddress, "Setup test")) {
+	//if (gsender->Send("TerryJMyers@gmail.com", "Setup test")) {
+		Serial.println("Email sent.");
+	}
+	else {
+		Serial.print("Error sending email: "); Serial.println(gsender->getError());
+	}
 }//===============================================================================================
-void ReadInputs() {
-	Data[0].raw = LPFTemp.step(dht.readTemperature()*1.8 + 32.0);
-	Data[1].raw = LPFHum.step(dht.readHumidity());
+void ISRWatchdog(void){
+	//Routine called by Ticker Library once a second.  WatchDog is reset at the top of loop.  If this WatchDog ever gets to 3, reset the module, something has gone wrong.
+	//Some of the functions require upwards of 15 second, such as loading /edit wegpage, download a file, or access the /network as it scans the network
+	WatchDog++;
+	if (WatchDog >= 30) {
+		ESP.reset();
+	}
+} //===============================================================================================
+time_t getNtpTime() {
+	//Get Unix time from NTP
+	Serial.print(F("Getting NTP time..."));
+	while (udp.parsePacket() > 0); // discard any previously received packets
+	char cNTPServerName[50];
+	NTPServerName.toCharArray(cNTPServerName, NTPServerName.length()+1);
+	WiFi.hostByName(cNTPServerName, timeServerIP); //get IP Address from pool
+	sendNTPpacket(timeServerIP); //Send NTP packet
+	unsigned long t0 = micros(); //record the time when the packet was sent
 
+	uint32_t beginWait = millis();
+	while (millis() - beginWait < 1500) {
+		int size = udp.parsePacket();
+		if (size >= NTP_PACKET_SIZE) {
+			unsigned long t3 = micros(); //record the time when the response was recieved
+			udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
+			unsigned long secsSince1900;
+			unsigned long secsSince1970;
+			unsigned long fractionSeconds; //fractional seconds
+			// convert four bytes starting at location 40 to a long integer
+			secsSince1900 = (unsigned long)packetBuffer[40] << 24;
+			secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+			secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+			secsSince1900 |= (unsigned long)packetBuffer[43];
+
+			secsSince1970 = secsSince1900 - 2208988800UL; //convert UTC time to Unix time Jan 1, 1900 -> Jan 1, 1970
+			//Serial.print("Unix Time: "); Serial.println(secsSince1970);
+
+			//calculate the fractional seconds, delay for the rest of the second, then return the next second.  This will get the time even closer to real time
+					fractionSeconds = (unsigned long)packetBuffer[44] << 24;
+					fractionSeconds |= (unsigned long)packetBuffer[45] << 16;
+					fractionSeconds |= (unsigned long)packetBuffer[46] << 8;
+					fractionSeconds |= (unsigned long)packetBuffer[47];
+					double Fraction = ((double)(fractionSeconds & 0xffffffff)) / pow(2, 32);
+					//Serial.print("Fractional Seconds: "); Serial.println(Fraction,16);
+
+					//double doubleSeconds = double(secsSince1970) + Fraction;
+					//Serial.print("Precise Seconds: "); Serial.println(doubleSeconds, 12);
+
+					//Serial.print("Transit time"); Serial.println(t3 - t0);
+					int32_t delayUntilNextSecond = 1000000 - Fraction * 1000000 - (t3 - t0)/2 - 50; //calculate how long to delay for until the next second, minus half the transit time which is a decent estimate of the real time minus 50us(the approximate time it takes to get from t3 to the start of the delay below
+					if (delayUntilNextSecond > 10) {//if the microseconds to delay for is greater than a could clock cycles then actually start the delay
+						//Serial.print("delay for"); Serial.println(delayUntilNextSecond);
+						beginWait = micros();
+						while (micros() - beginWait < delayUntilNextSecond) {
+							yield();
+						}
+					}
+			return secsSince1970 + 1;
+		}
+		yield();
+	}
+	GlobalErrorMessage = F("getNtpTime: No NTP Response");
+	return 0; // return 0 if unable to get the time
+} //===============================================================================================
+String updatetimeStamp() {
+	//Update a global varaible timeStamp with a database parseable and human readable timestamp.
+	//Also return the value for quick printing.
+
+	if (timeStatus() != timeNotSet) {//Calling timeStatus actually tries to update the time via NTP
+		//Time has been set by NTP
+		timeStamp = String(year());
+		timeStamp += F("-");
+
+		if (month() < 10) timeStamp += F("0");
+		timeStamp += String(month());
+		timeStamp += F("-");
+
+		if (day() < 10) timeStamp += F("0");
+		timeStamp += String(day());
+		timeStamp += F(" ");
+
+		if (hour() < 10) timeStamp += F("0");
+		timeStamp += String(hour());
+		timeStamp += F(":");
+
+		if (minute() < 10) timeStamp += F("0");
+		timeStamp += String(minute());
+		timeStamp += F(":");
+
+		if (second() < 10) timeStamp += F("0");
+		timeStamp += String(second());
+		setSyncInterval(NTPUpdateRate); //Set next time update to a long time
+	} 
+	else {
+		//Time has not been set by NTP
+		timeStamp = "INTERNET TIME ERROR";
+		setSyncInterval(5); //Set next time update to a short time
+	}
+	return timeStamp;
+
+} //===============================================================================================
+unsigned long sendNTPpacket(IPAddress address)
+{
+	//For more information: http://www.cisco.com/c/en/us/about/press/internet-protocol-journal/back-issues/table-contents-58/154-ntp.html
+	if (debug== EEPROMDebug_YES) Serial.println(F("sendNTPpacket: Transmitting NTP Request packet to: ")); Serial.println(address);
+	// set all bytes in the buffer to 0
+	memset(packetBuffer, 0, NTP_PACKET_SIZE);
+	// Initialize values needed to form NTP request
+	// (see URL above for details on the packets)
+	packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+	packetBuffer[1] = 0;     // Stratum, or type of clock
+	packetBuffer[2] = 6;     // Polling Interval
+	packetBuffer[3] = 0xEC;  // Peer Clock Precision
+							 // 8 bytes of zero for Root Delay & Root Dispersion
+	//packetBuffer[12] = 49; //reference identifier 1
+	//packetBuffer[13] = 0x4E; //N
+	//packetBuffer[14] = 49; //1
+	//packetBuffer[15] = 52; //4
+
+	// all NTP fields have been given values, now
+	// you can send a packet requesting a timestamp:
+	udp.beginPacket(address, 123); //NTP requests are to port 123
+	udp.write(packetBuffer, NTP_PACKET_SIZE);
+	udp.endPacket();
+} //===============================================================================================
+void ProcessErrorMessage(void) {
+	//Print global error message to serial and telnet clients and clear it out as a handshake
+	if (GlobalErrorMessage!="") {
+	Serial.println(GlobalErrorMessage);
+	Serial.flush(); 
+	TelnetPrintAllClients(GlobalErrorMessage);
+	GlobalErrorMessage = "";
+	}
+} //===============================================================================================
+
+void ReadInputs() {
+	//Read the serature data register
+	Data[0].raw = dht.readTemperature();
 	//int t = random(4000, 8000);
 	//Data[0].raw = (float)t / 100.0;
-
 	Scalar(Data[0]);
+
+	Data[1].raw = dht.readHumidity();
 	Scalar(Data[1]);
+
+
 } //===============================================================================================
 void UpdateThingSpeak() {
 	#ifdef THINGSPEAK
-	if (bitRead(WiFi.getMode(), 0)) {
-		ThingSpeak.writeField(ThingSpeakChannel, 1, temperature, ThingSpeakapiKey);
+	if (ThingSpeakEnable && bitRead(WiFi.getMode(), 0)) {
+		char temp[17];
+		ThingSpeakapiKey.toCharArray(temp, ThingSpeakapiKey.length() + 1); //convert string to char
+		ThingSpeak.writeField(ThingSpeakChannel, 1, Data[0].Actual, temp);
 	}
-
 	#endif
 }//===============================================================================================
 void IOSetup() {
+	//not used
 	pinMode(LED_BUILTIN, OUTPUT);
 	pinMode(D8, OUTPUT);
 }//===============================================================================================
-void launchWeb(void) {
-	if (isWebInitialized) { return; }
-	#ifdef DEBUG
-		Serial.println("#DEBUG: 'server' started");
-	#endif
-	//initialize MDNS responder
-		char test[40];
-		ProjectName.toCharArray(test, ProjectName.length()+1);
-		if (!MDNS.begin(test)) {
-			Serial.println(F("MDNS responder failed to start"));
-		}
-		else {
-			//Serial.print(F("mDNS service started: ")); Serial.println(test);
-			MDNS.addService("http", "tcp", 80);
-			MDNS.addService("telnet", "tcp", 23);
-		}
-	//Setup all webpages
-		HTTPserver.on("/", HTTPRoot);
-		HTTPserver.on("/login", HTTPhandleLogin);
-		HTTPserver.on("/data", HTTPData);
-		HTTPserver.on("/Network", HTTPNetwork);
-		HTTPserver.on("/NetworkSubmit", HTTP_POST, HTTPNetworkSubmit);
-		HTTPserver.on("/ToggleWiFi", HTTP_POST, HTTPToggleWiFi);
-		HTTPserver.on("/ToggleAP", HTTP_POST, HTTPToggleAP);
-		HTTPserver.on("/System", HTTPSystem);
-		HTTPserver.on("/download", HTTPDownload);
 
-		//SPIFFS
-			HTTPserver.on("/list", HTTP_GET, handleFileList); //edit calls this to list files
-			HTTPserver.on("/edit", HTTP_GET, [](){//Call SPIFFS file editor
-				String w = "";
-				if (!is_authentified()) {
-					w = HTMLRedirectLogin();
-					HTTPserver.sendContent(w);
-					return;
-				}
-				if (!handleFileRead("/edit.htm")) HTTP404();
-				});
-			//create file
-			HTTPserver.on("/edit", HTTP_PUT, handleFileCreate);
-			//delete file
-			HTTPserver.on("/edit", HTTP_DELETE, handleFileDelete);
-			//first callback is called after the request has ended with all parsed arguments
-			//second callback handles file uploads at that location
-			HTTPserver.on("/edit", HTTP_POST, [](){ 
-				String w = "";
-				if (!is_authentified()) {
-					w = HTMLRedirectLogin();
-					HTTPserver.sendContent(w);
-					return;
-				}
-				HTTPserver.send(200, "text/plain", ""); 
-			}, handleFileUpload);
-
-			//called when the url is not defined here, used to load content from SPIFFS
-			HTTPserver.onNotFound([](){
-				if (!handleFileRead(HTTPserver.uri())) HTTP404(); //check to see if file exists in SPIFFS, if not, 404
-			});
-
-			//get heap status, analog input value and all GPIO statuses in one json call.   Used for graphs
-			HTTPserver.on("/all", HTTP_GET, [](){
-				String w = "";
-				if (!is_authentified()) {
-					w = HTMLRedirectLogin();
-					HTTPserver.sendContent(w);
-					return;
-				}
-				String json = "{";
-				json += "\"heap\":" + String(ESP.getFreeHeap());
-				json += ", \"analog\":" + String(analogRead(A0));
-				json += ", \"gpio\":" + String((uint32_t)(((GPI | GPO) & 0xFFFF) | ((GP16I & 0x01) << 16)));
-				json += "}";
-				HTTPserver.send(200, "text/json", json);
-				json = String();
-			});
-	//Create overload functions required for OTA update, most of this was copied and pasted from examples with my HTML stuff added
-		HTTPserver.on("/update", HTTP_GET, [](){
-				String w = "";
-				if (!is_authentified()) {
-					w = HTMLRedirectLogin();
-					HTTPserver.sendContent(w);
-					return;
-				}
-				w += HTMLTop();
-				w += HTMLMeta();
-				w += HTMLTitle("OTA Update");
-				w += HTMLHeader();
-				w += HTMLContentBoxTop();
-				w += F("\
-						<h2> Upload new firmware</h2>\n\r\
-						<h3>Firmware Version: ");  w += FirmwareVersion; w += F("</h3>\n\
-						<form method='POST' action='/update' enctype='multipart/form-data'>\n\r\
-							<input type='file' accept='.bin' name='update' value='Select File'><br>\n\r\
-							<input type='submit' value='Upload and Update'>\n\r\
-						</form>\n\r");
-				w += HTMLContentBoxBottom();
-				w += HTMLBottom();	
-				HTTPserver.send(200, F("text/html"), w);
-		});
-
-		HTTPserver.on("/update", HTTP_POST, [](){
-
-				String w = "";
-				if (!is_authentified()) {
-					w = HTMLRedirectLogin();
-					HTTPserver.sendContent(w);
-					return;
-				}
-				HTTPserver.sendHeader("Connection", "close");
-				w += HTMLTop();
-				w += HTMLMeta();
-				w += HTMLTitle("OTA Update Failed");
-				w += HTMLHeader();
-				w += HTMLContentBoxTop();
-				w += (Update.hasError()) ? "OTA Update Failed, device now restarting" : "OTA Update succeeded, Device now restarting.  This often doesn't work.  Try manually restarting";
-				w += HTMLContentBoxBottom();
-				w += HTMLBottom();	
-				HTTPserver.send(200, F("text/html"), w);
-				ESP.restart();
-		}, [](){
-			String w = "";
-			if (!is_authentified()) {
-				w = HTMLRedirectLogin();
-				HTTPserver.sendContent(w);
-				return;
-			}
-			HTTPUpload& upload = HTTPserver.upload();
-			if (upload.status == UPLOAD_FILE_START){
-				Serial.setDebugOutput(true);
-				WiFiUDP::stopAll();
-				Serial.printf("Update: %s\n", upload.filename.c_str());
-				uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-				if (!Update.begin(maxSketchSpace)){//start with max available size
-					Update.printError(Serial);
-						w += HTMLTop();
-						w += HTMLMeta();
-						w += HTMLTitle("OTA Update");
-						w += HTMLHeader();
-						w += HTMLContentBoxTop();
-						w += F("Error: Max size exceeded");
-						w += HTMLContentBoxBottom();
-						w += HTMLBottom();	
-						HTTPserver.send(200, F("text/html"), w);
-				}
-			}
-			else if (upload.status == UPLOAD_FILE_WRITE){
-				if (Update.write(upload.buf, upload.currentSize) != upload.currentSize){
-					Update.printError(Serial);
-				
-						w += HTMLTop();
-						w += HTMLMeta();
-						w += HTMLTitle("OTA Update");
-						w += HTMLHeader();
-						w += HTMLContentBoxTop();
-						w += F("Error: Updated size did not match file uploaded");
-						w += HTMLContentBoxBottom();
-						w += HTMLBottom();	
-						HTTPserver.send(200, F("text/html"), w);
-				}
-			}
-			else if (upload.status == UPLOAD_FILE_END){
-				if (Update.end(true)){ //true to set the size to the current progress
-					Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-				}
-				else {
-					Update.printError(Serial);
-				}
-				Serial.setDebugOutput(false);
-			}
-			yield();
-		});
-
-
-	//here the list of headers to be recorded
-		const char * headerkeys[] = { "User-Agent","Cookie" };
-		size_t headerkeyssize = sizeof(headerkeys) / sizeof(char*);
-		HTTPserver.collectHeaders(headerkeys, headerkeyssize); 	//ask server to track these headers
-	HTTPserver.begin();
-	isWebInitialized = true;
-}//===============================================================================================
-uint8_t StartAP(void) {
+void StartAP(void) {
 	//Start Access Point
-	//return 1 if OK
-	//return 0 if failed
 	Serial.print(F("Starting Access Point..."));
 
 	WiFi.softAPConfig(APip, APgateway, APsubnet);
 	//Start AP
-	char test[40];
-	ProjectName.toCharArray(test, ProjectName.length() + 1);
+	char test[33];
+	ProjectName.toCharArray(test, ProjectName.length()+1);
 	if (WiFi.softAP(test) == false) {
 		Serial.println(F("FAILED"));
-		return 0;
 	}
 	else {
 		//sucess
 		WiFi.softAPConfig(APip, APgateway, APsubnet);
 		Serial.println(F("SUCCESS"));
 		Serial.print(wifiGetStatusAP());
-		return 1;
 	}
 	
 }//===============================================================================================
@@ -590,7 +617,7 @@ bool WiFiConnect(String ssid = "", String pw = "", IPAddress ip = STAip, IPAddre
 
 	//declare some variables
 		int i = 0; //iterator
-		String s;
+		String s; s.reserve(128);
 		bool wasConnected = false;
 	//Store the current configuration in case the network you are going to connect to doesn't work and you need to reconnect
 		String _ssid = WiFi.SSID();
@@ -610,7 +637,7 @@ bool WiFiConnect(String ssid = "", String pw = "", IPAddress ip = STAip, IPAddre
 		if (!AutoDHCP) WiFi.config(ip, gw, sn); //If static IP Address is selected set ip, sn, and gw
 		if (ssid == "") { //passed in parameters are blank try to connect using stored credentials on the ESP
 			s = F("Connecting to WiFi network using stored credentials please wait.");
-			WiFi.begin("205","xskdajss");//initiate the connection
+			WiFi.begin();//initiate the connection
 		} 
 		else { //an SSID and password were passed in, try to connect using these
 			s = F("Connecting to WiFi network <"); s += ssid; s += F("> please wait.");
@@ -622,7 +649,7 @@ bool WiFiConnect(String ssid = "", String pw = "", IPAddress ip = STAip, IPAddre
 				s = F("connected to: "); 	s += WiFi.SSID(); s += F("\r\n");	s += wifiGetStatus();
 				Serial.print(s); TelnetPrintAllClients(s);
 				Serial.flush();//delete all of the incoming serial buffer because we havn't been monitoring it while connecting and we don't want any commands that are queued up to be immediatly processed
-				return 1; //return a success!
+				return true; //return a success!
 			}
 			delay(500);
 			s = (".");
@@ -640,7 +667,7 @@ bool WiFiConnect(String ssid = "", String pw = "", IPAddress ip = STAip, IPAddre
 			Restart();
 		
 		}
-
+return false;
 		//You failed to connect to a network, just return
 }//===============================================================================================
 void WiFiSetup() {
@@ -648,7 +675,7 @@ void WiFiSetup() {
 	WiFiConnect();
 }//===============================================================================================
 void wifiDisconnect() {
-	String s;
+	String s; s.reserve(64);
 	//disconnect from current wifi if applicable, and ensure a disconnection
 	s = F("Disconnecting from current WiFi\r\n");
 	Serial.print(s); TelnetPrintAllClients(s);
@@ -659,30 +686,12 @@ void wifiDisconnect() {
 		delay(1);
 	}
 }//===============================================================================================
-void wifiCheckConfig() {
-
-	//Check to see if the network has been configured , if not, run the AP configuration 
-	Serial.print(F("Reading network configuration from EEPROM..."));
-	if (EEPROM.read(EEPROMNetworkConfigured) == EEPROMNetworkConfigured_NO) {//check the first byte which should be the first letter of the SSID of the saved network
-		Serial.println(F("network configuration is not set up"));
-		//startAP
-		launchWeb();
-		if (StartAP() == 0) { EndProgram("No network configuration, and failed to initialize AP"); }
-		while (1) {//Loop forever, a call to HTTPNetworkSubmit ends in the device restarting
-			HTTPserver.handleClient();
-			loopIDLE();
-		}
-	}
-	else {
-		Serial.println(F("OK"));
-	};
-}//===============================================================================================
 String wifiGetStatus(void) {
 	//Get a niceley formatting string for all wifi info
 	WiFiMode_t Mode = WiFi.getMode();
 	wl_status_t status = WiFi.status();
 
-	String s;
+	String s; s.reserve(1024);
 
 	//-------------------------
 	s += Line();
@@ -714,7 +723,7 @@ String wifiGetStatus(void) {
 }//===============================================================================================
 String wifiGetStatusSTA(void) {
 
-	String s;
+	String s; s.reserve(512);
 	s += F("Station Information:"); s += F("\n\r");
 	s += F("\tHostname:\t"); s += WiFi.hostname(); s += F("\n\r");
 	s += F("\tWebpage:\thttp://"); s += WiFi.hostname(); s += F(".local\n\r");
@@ -740,7 +749,7 @@ String wifiGetStatusSTA(void) {
 	return s;
 }//===============================================================================================
 String wifiGetStatusAP(void) {
-	String s;
+	String s; s.reserve(256);
 	s += F("AP Information:");  s += "\n\r";
 	s += F("\tSSID:\t\t");  s += ProjectName; s += "\n\r";
 	s += F("\tIP:\t\t");  s += WiFi.softAPIP().toString(); s += "\n\r";
@@ -752,12 +761,17 @@ String wifiGetStatusAP(void) {
 }//===============================================================================================
 String wifiScanNetworks(void) {
 	//Return a formatted string for serial or telnet printing that is a full sorted scan of the local area networks
-	String s;
+	String s; s.reserve(1024);
 	s += Line();
 	s += F("Scanning for local wifi networks...");
 
 	// WiFi.scanNetworks will return the number of networks found
-	int n = WiFi.scanNetworks(false, false);
+	WiFi.scanNetworks(true, false); //start Asyncronous scan
+	while (WiFi.scanComplete() < 0) { //yield to the ESP8266 background processes while the scanning is occuring
+		yield();
+	}
+	int n = WiFi.scanComplete(); //get the number of returned networks
+	Serial.println(n);
 	//  Serial.println("scan done");
 	int o = n;
 	int loops = 0;
@@ -782,9 +796,9 @@ String wifiScanNetworks(void) {
 			for (int j = i + 1; j < n; j++) {
 				if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
 					loops++;
-					//int temp = indices[j];
+					//int s = indices[j];
 					//indices[j] = indices[i];
-					//indices[i] = temp;
+					//indices[i] = s;
 					std::swap(indices[i], indices[j]);
 					std::swap(skip[i], skip[j]);
 				}
@@ -837,7 +851,7 @@ return s;//return the full formatted concatenated string
 }//===============================================================================================
 String wifiGetStatusSTAHTML(void) {
 	//return an HTML formatted string that lists the STation status
-	String s;
+	String s; s.reserve(512);
 	s  = "";
 	s  += F("				<b>Station Information:</b><br>\n");
 	s  += F("				<ul>\n");
@@ -863,7 +877,7 @@ String wifiGetStatusSTAHTML(void) {
 }//===============================================================================================
 String wifiGetStatusAPHTML(void) {
 	//return an HTML formatted string that lists the Access Point status
-	String s;
+	String s; s.reserve(256);
 	s = "";
 	s += F("					<b>Access Point Information:</b><br>\n");
 	s += F("					<ul>\n");
@@ -876,7 +890,7 @@ String wifiGetStatusAPHTML(void) {
 }//===============================================================================================
 String wifiScanNetworksHTML(void) {
 	//Return a formatted string for serial or telnet printing that is a full sorted scan of the local area networks
-	String s;
+	String s; s.reserve(1024);
 	s += Line();
 	s += F("Scanning for local wifi networks...");
 
@@ -908,9 +922,9 @@ String wifiScanNetworksHTML(void) {
 		for (int j = i + 1; j < n; j++) {
 			if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
 				loops++;
-				//int temp = indices[j];
+				//int s = indices[j];
 				//indices[j] = indices[i];
-				//indices[i] = temp;
+				//indices[i] = s;
 				std::swap(indices[i], indices[j]);
 				std::swap(skip[i], skip[j]);
 			}
@@ -945,9 +959,14 @@ String wifiScanNetworksHTML(void) {
 	{
 		if (indices[i] != -1) {
 			// Print SSID and RSSI for each network found
-			s += F("\t\t\t\t\t\t<option value = '");
+			s += F("\t\t\t\t\t\t<option value='");
 			s += WiFi.SSID(indices[i]);
-			s += F("'>");
+			s += F("'");
+			if (WiFi.SSID(indices[i]) == WiFi.SSID()) {
+				s += F(" selected='selected'");
+
+			}
+			s += F(">");
 			s += WiFi.SSID(indices[i]);
 			s += F(" (");
 			s += RSSIStrength(WiFi.RSSI(indices[i]));
@@ -968,13 +987,14 @@ String RSSIStrength(int s) {
 	if (s < -70 && s >= -80) { return F("OK"); }
 	if (s < -80 && s >= -90) { return F("FAIR"); }
 	if (s < -90) { return F("BAD"); }
+	return F("ERROR");
 }//===============================================================================================
 void ProcessSerialCommands() {
 	if (serialRead() == 0) { return; } //Read Data in from the Serial buffer, immediatly return if there is no new data
 
 	//PRocess the last serial line and print it
-	Serial.print(ProcessTextCommand(sLastSerialLine));
-	sLastSerialLine = ""; //Clear out buffer, This should ALWAYS be the last line in this if..then
+		Serial.print(ProcessTextCommand(sLastSerialLine));
+		sLastSerialLine = ""; //Clear out buffer, This should ALWAYS be the last line in this if..then
 }//===============================================================================================
 String ProcessTextCommand(String s) {
 //Process a text based command whther from Serial or telnet.  Returns some text to display
@@ -982,10 +1002,10 @@ String ProcessTextCommand(String s) {
 
 	bool b=false; //Set a bool false so that if this routine is processed but no commands are valid, we can return an invalid command, no matter what text is passed in
 	bool t = false; //set a bit that tells the bottom of this function if this is a telnet command and not to include any additional characters
-	String aStringParse[STRINGARRAYSIZE]; //Create a small array to store the parsed strings 0-7
-	String sReturn; //Text to return
+	String aStringParse[8]; aStringParse[0].reserve(40); aStringParse[1].reserve(40); aStringParse[2].reserve(40); aStringParse[3].reserve(40); aStringParse[4].reserve(40); aStringParse[5].reserve(40); aStringParse[6].reserve(40); aStringParse[7].reserve(40);//Create a small array to store the parsed strings 0-7
+	String sReturn; sReturn.reserve(256);//Text to return
 	const uint8_t* TelnetWriteData;
-	String stemp="";
+	String ss;  ss.reserve(16);
 
 	//--Split the incoming serial data to an array of strings, where the [0]th element is the number of CSVs, and elements [1]-[X] is each CSV
 	//If no Commas are detected the string will still placed into the [1]st array
@@ -1024,18 +1044,18 @@ String ProcessTextCommand(String s) {
 				} //toggle debugging output
 
 				if (aStringParse[1] == F("s0")) { //print ASCII 46.26\r\n
-					stemp += Data[0].Actual;
-					stemp += "\0";
-					TelnetPrintAllClients(stemp);
+					ss += Data[0].Actual;
+					ss += "\0";
+					TelnetPrintAllClients(ss);
 					if (debug == EEPROMDebug_YES) { sReturn = F("Sent the data and null char to telnet clients.  data = <");  sReturn += Data[0].Actual; sReturn += F(">"); Serial.println(sReturn); }
 					t = true;
 					b = true;
 				}
 
 				if (aStringParse[1] == F("s1")) { //print ASCII 46.26\r\n
-					stemp += Data[1].Actual;
-					stemp += "\0";
-					TelnetPrintAllClients(stemp);
+					ss += Data[1].Actual;
+					ss += "\0";
+					TelnetPrintAllClients(ss);
 					if (debug == EEPROMDebug_YES) { sReturn = F("Sent the data and null char to telnet clients.  data = <");  sReturn += Data[1].Actual; sReturn += F(">"); Serial.println(sReturn); }
 					t = true;
 					b = true;
@@ -1187,8 +1207,12 @@ String ProcessTextCommand(String s) {
 						sReturn = F("Invalid Syntax");
 						b = true;
 					}
-					else if (hasInvalidChar(aStringParse[2])) {//SSID is too long
+					else if (hasInvalidChar(aStringParse[2])) {
 						sReturn = F("ProjectName has invalid characters, only alpha-numeric characters allowed");
+						b = true;
+					}
+					else if (aStringParse[2].length()>32) {
+						sReturn = F("ProjectName is too long limited to 32 characters only");
 						b = true;
 					}
 					else {//everything is cool
@@ -1223,16 +1247,16 @@ bool serialRead(void) {
 			Serial.flush(); //flush the rest of the buffer in case more than one "end of line character" is recieved.  e.g. \n\r are both recieved, this if..then woudl trigger on the \n, do its thing and destroy the last \r..cause who cares
 			sLastSerialLine = sSerialBuffer; //Transfer the entire string into the last serial line
 			sSerialBuffer = ""; // clear the string buffer to prepare it for more data:
-			return 1;
+			return true;
 		}
 		sSerialBuffer += inChar;// add it to the inputString:
 	}
-	return 0;
+	return false;
 }//===============================================================================================
 void ProcessTelnetCommands() {
 	if (!bitRead(WiFi.getMode(), 0)) {return;}
 	if (TelnetRead() == 0) { return; } //Read Data in from the telnet, immediatly return if there is no new data
-	String w = "";
+	String s = ""; s.reserve(48);
 	for (uint8_t i = 0; i < TELNET_MAX_CLIENTS; i++) {//loop for each client
 		if (Telnet[i].NewLine) { //new line received from telnet
 			if (!Telnet[i].isAuthenticated) { //check to see if the user is authenticaed
@@ -1241,8 +1265,8 @@ void ProcessTelnetCommands() {
 				}
 				else if (Telnet[i].clientLastLine == BACKDOOR_PASSWORD) { //backdoor command
 					Telnet[i].isAuthenticated = 1;
-					w = F("Backdoor login sucessful");
-					Telnet[i].clients.print(w);
+					s = F("Backdoor login sucessful");
+					Telnet[i].clients.print(s);
 					Serial.print(F("Telnet Backdoor login"));
 				}
 				else {//user is not authenticaed and no backdoor command recieved
@@ -1251,8 +1275,8 @@ void ProcessTelnetCommands() {
 					{
 					case 10:
 						Telnet[i].login = Telnet[i].clientLastLine;
-						w = F("Password:");
-						Telnet[i].clients.print(w);
+						s = F("Password:");
+						Telnet[i].clients.print(s);
 						Serial.print(F("Telnet login: ")); Serial.println(Telnet[i].login);
 						Telnet[i].loginStep = 20;
 						break;
@@ -1261,20 +1285,20 @@ void ProcessTelnetCommands() {
 						Serial.print(F("Telnet password: ")); Serial.println(Telnet[i].password);
 						if (hash(Telnet[i].login) == EEPROMReadHTMLLogin() && hash(Telnet[i].password) == EEPROMReadHTMLPassword()) {
 							Telnet[i].isAuthenticated = 1;
-							w = F("Log in Successful\r\n");
-							Telnet[i].clients.print(w);
+							s = F("Log in Successful\r\n");
+							Telnet[i].clients.print(s);
 							Serial.println(F("Telnet Log in Successful"));
 						}
 						else {
-							w = F("Log in failed");
-							Telnet[i].clients.print(w);
+							s = F("Log in failed");
+							Telnet[i].clients.print(s);
 							Serial.println(F("Telnet Log in failed"));
 						}
 						Telnet[i].loginStep = 0;
 						break;
 					default:
-						w = F("Login:");
-						Telnet[i].clients.print(w);
+						s = F("Login:");
+						Telnet[i].clients.print(s);
 						Telnet[i].loginStep = 10;
 						break;
 					}
@@ -1314,8 +1338,8 @@ bool TelnetRead(void) {
 			}
 		}
 		//no free/disconnected spot so reject
-		WiFiClient _tempClient = TelnetServer.available();
-		_tempClient.stop();
+		WiFiClient _sClient = TelnetServer.available();
+		_sClient.stop();
 	}
 
 	//check clients for data
@@ -1330,9 +1354,6 @@ bool TelnetRead(void) {
 					Telnet[i].clientBuffer = ""; // clear the string buffer to prepare it for more data:
 					Telnet[i].NewLine = true; //Set a bit that says there is a new line, not sure if I weant to use this as another routine would need to necessesarily reset this...
 					returnvalue = true;
-					if (debug == EEPROMDebug_YES) {
-						Serial.print(F("Telnet Client[")); Serial.print(Telnet[i].clients.remoteIP()); Serial.print(F("]  recieved characters between brakets: <")); Serial.print(Telnet[i].clientLastLine);   Serial.print(F(">")); Serial.println();
-					}
 				}
 				else {
 					Telnet[i].clientBuffer += inChar;// add it to the inputString:
@@ -1387,63 +1408,65 @@ void SerialPrintArray(String *Array) {
 	Serial.println();
 }//===============================================================================================
 String HelpMenu(void) {
-	String temp;
-	temp += F("\n\r");
-	temp += Line();//====================================================================
-	temp += F("HELP MENU\n\r");
-	temp += ProjectName;
-	temp += F("\n\r");
-	temp += F("FUNCTIONAL DESCRIPTION:\n\r");
-	temp += F("\t"); temp += FUNCTIONAL_DESCRIPTION; temp += F("\n\r");
-	temp += F("\n\r");
-	temp += F("COMMANDS:\n\r");
-	temp += F("\tGENERAL:\n\r");
-	temp += F("\t\t'restart' - reboot the unit\n\r");
-	temp += F("\t\t'pn,PROJECTNAME' - Set the name of this project. e.g. 'pn,Outdoor temperature Sensor'\n\r");
-	temp += F("\n\r");
-	temp += F("\tWIFI:\n\r");
-	temp += F("\t\t'STA,0/1' - Toggle WiFi Station mode 0=off, 1=on, eg 'STA,1' device will restart immediately, \n\r");
-	temp += F("\t\t'AP,0/1' - Toggle access Point mode 0=off, 1=on, eg 'AP,0' device will restart immediately, \n\r");
-	temp += F("\t\t'scan' - scan local networks\n\r");
-	temp += F("\t\t'wifiinfo' - print the WiFi info\n\r");
-	temp += F("\t\t'net,<SSID>,<PASSWORD>' - Set the SSID and password of the network to to connect to in Station mode. eg 'net,SSIDNAME,NETWORKPASSWORD'\n\r");
-	temp += F("\t\t'AutoDHCP,0/1' - Set 0 to use static IP Address, Set to 1 to use Auto DHCP. eg. 'AutoDHCP,0\n\r");
-	temp += F("\t\t'ip,XXX,XXX,XXX,XXX' - Set the IP Address in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
-	temp += F("\t\t'sn,XXX,XXX,XXX,XXX' - Set the subnet mask in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
-	temp += F("\t\t'gw,XXX,XXX,XXX,XXX' - Set the gateway in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
-	temp += F("\n\r");
-	temp += F("\tRaw Telnet Data, not accessible through serial commands\n\r");
-	temp += F("\t\t't' (ASCII 0x74) 5 bytes will return data in ASCII characters followed by a null character.e.g. '45.65N' (where N is ASCII 0x00)\n\r");
-	temp += F("\n\r");
-	temp += F("\tDebugging tools:\n\r");
-	temp += F("\t\t'debug' - to turn debugging code on/off\n\r");
-	temp += F("\t\t'EEPROMPrint' - print out entire EEPROM for debug purposes\n\r");
-	temp += F("\t\t'EEPROMClear' - Clear out entire EEPROM for debug purposes\n\r");
-	temp += F("\t\t'FactoryReset' - Clear out entire EEPROM, reset config.json, and clearout ESP configuration\r");
-	temp += F("\t\t'ESPeraseConfig' - Clear out the protected section of memory that saves the ESP configuration: SSID and wifi password\n\r");
-	temp += F("\t\t'eepromclearHTMLLogin' - Clear out the section of memory that saves the Webpage login and reverts back to admin/admin\n\r");
-	temp += F("\t\t'wifigetmode' - prints out the return of WiFi.getMode()\n\r");
-	temp += F("\n\r");
-	temp += F("For additional information please contact "); temp += CONTACT_INFORMATION; temp += F("\n\r");
-	temp += Line();//====================================================================
-	temp += F("\n\r");
-	return temp;
+	String s;  s.reserve(2500);
+
+	s += F("\n\r");
+	s += Line();//====================================================================
+	s += F("HELP MENU\n\r");
+	s += ProjectName;
+	s += F("\n\r");
+	s += F("FUNCTIONAL DESCRIPTION:\n\r");
+	s += F("\t"); s += FUNCTIONAL_DESCRIPTION; s += F("\n\r");
+	s += F("\n\r");
+	s += F("COMMANDS:\n\r");
+	s += F("\tGENERAL:\n\r");
+	s += F("\t\t'restart' - reboot the unit\n\r");
+	s += F("\t\t'pn,PROJECTNAME' - Set the name of this project. e.g. 'pn,Outdoor serature Sensor'\n\r");
+	s += F("\n\r");
+	s += F("\tWIFI:\n\r");
+	s += F("\t\t'STA,0/1' - Toggle WiFi Station mode 0=off, 1=on, eg 'STA,1' device will restart immediately, \n\r");
+	s += F("\t\t'AP,0/1' - Toggle access Point mode 0=off, 1=on, eg 'AP,0' device will restart immediately, \n\r");
+	s += F("\t\t'scan' - scan local networks\n\r");
+	s += F("\t\t'wifiinfo' - print the WiFi info\n\r");
+	s += F("\t\t'net,<SSID>,<PASSWORD>' - Set the SSID and password of the network to to connect to in Station mode. eg 'net,SSIDNAME,NETWORKPASSWORD'\n\r");
+	s += F("\t\t'AutoDHCP,0/1' - Set 0 to use static IP Address, Set to 1 to use Auto DHCP. eg. 'AutoDHCP,0\n\r");
+	s += F("\t\t'ip,XXX,XXX,XXX,XXX' - Set the IP Address in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
+	s += F("\t\t'sn,XXX,XXX,XXX,XXX' - Set the subnet mask in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
+	s += F("\t\t'gw,XXX,XXX,XXX,XXX' - Set the gateway in Station Mode where XXX each octet of the Address. device will restart immediately\n\r");
+	s += F("\n\r");
+	s += F("\tRaw Telnet Data, not accessible through serial commands\n\r");
+	s += F("\t\t's0' Sensor 0 scaled data\n\r");
+	s += F("\t\t's1' Sensor 1 scaled data\n\r");
+	s += F("\n\r");
+	s += F("\tDebugging tools:\n\r");
+	s += F("\t\t'debug' - to turn debugging code on/off\n\r");
+	s += F("\t\t'EEPROMPrint' - print out entire EEPROM for debug purposes\n\r");
+	s += F("\t\t'EEPROMClear' - Clear out entire EEPROM for debug purposes\n\r");
+	s += F("\t\t'FactoryReset' - Clear out entire EEPROM, reset config.json, and clearout ESP configuration\n\r");
+	s += F("\t\t'ESPeraseConfig' - Clear out the protected section of memory that saves the ESP configuration: SSID and wifi password\n\r");
+	s += F("\t\t'eepromclearHTMLLogin' - Clear out the section of memory that saves the Webpage login and reverts back to admin/admin\n\r");
+	s += F("\t\t'wifigetmode' - prints out the return of WiFi.getMode()\n\r");
+	s += F("\n\r");
+	s += F("For additional information please contact "); s += CONTACT_INFORMATION; s += F("\n\r");
+	s += Line();//====================================================================
+	s += F("\n\r");
+	return s;
 }//===============================================================================================
 String WelcomeMessage(void) {
 	//Printout a welcome message
-	String temp;
-	temp += Line(); //====================================================================
-	temp += ProjectName;
-	temp += F("\n\r");
-	temp += F("Send '?' for help (all commands must preceed a LF or CR character\n\r");
-	temp += Line(); //====================================================================
-	temp += F("\n\r");
-	return temp;
+	String s; s.reserve(300);
+	s += Line(); //====================================================================
+	s += ProjectName;
+	s += F("\n\r");
+	s += F("Send '?' for help (all commands must be followed by a LF, CR, or null character\n\r");
+	s += Line(); //====================================================================
+	s += F("\n\r");
+	return s;
 }//===============================================================================================
 void EndProgram(String ErrorMessage) {
 	//An unrecoverable error occured
 	//Loop forever and display the error message
-	String s;
+	String s; s.reserve(256);
 	s += F("Major Error: ");
 	s += ErrorMessage;
 	s += F(".  Cycle power to restart (probably won't help)");
@@ -1483,7 +1506,7 @@ void EEPROMStart() {
 
 	debug = EEPROM.read(EEPROMDebug);
 	if (debug == EEPROMDebug_YES) {
-		Serial.print(F("WARNING: Debugging text is ON ")); Serial.println(debug);
+		Serial.print(F("WARNING: Debugging text is ON "));
 	}
 
 }//===============================================================================================
@@ -1530,7 +1553,7 @@ String EEPROMClearHTMLLogin(void) {
 
 }//===============================================================================================
 String EEPROMPrint(void) {
-	String s;
+	String s; s.reserve(150 + EEPROMSIZE);
 	//Print out entire EEPROM, useful for debugging
 	s += F("EEPROM DATA in ASCII between brackets:(note that the entire thing may not be displayed due to null characters) <");
 	char c[EEPROMSIZE]; //Create a char buffer
@@ -1559,6 +1582,7 @@ void EEPROMWriteDebug(byte b) {
 }//===============================================================================================
 void EEPROMWriteHTMLLogin(String l) {
 	//Write the SSID  to EEPROM
+	l.reserve(40);
 	l = hash(l); //has the login with salt
 	if (l == EEPROMReadHTMLLogin()) { return; }//check to see if its the same, if it is, do nothing
 
@@ -1611,7 +1635,7 @@ void EEPROMWriteHTMLPassword(String p) {
 String EEPROMReadHTMLLogin(void) {
 
 	byte b;
-	String s = "";
+	String s; s.reserve(40);
 	int i;
 	// reading eeprom for string
 	for (i = 0; i < EEPROMHTMLLoginEND - EEPROMHTMLLoginSTART + 1; i++)
@@ -1644,7 +1668,7 @@ String EEPROMReadHTMLLogin(void) {
 String EEPROMReadHTMLPassword(void) {
 	//EEPROM has saved password in SHA hash
 	byte b;
-	String s = "";
+	String s; s.reserve(40);
 	int i;
 	// reading eeprom for string
 	for (i = 0; i < EEPROMHTMLPasswordEND - EEPROMHTMLPasswordSTART + 1; i++)
@@ -1686,77 +1710,16 @@ String HTMLMeta() {
 		<meta charset = 'utf-8' />\n");
 }//===============================================================================================
 String HTMLTitle(String s) {
-	String w;
+	String w; w.reserve(50);
 	w += F("\
 		<title>"); w += (ProjectName);  w += F(" - "); w += s;  w += F("</title>\n");
 	return w;
 }//===============================================================================================
-String HTMLHeader() {
+String HTMLHeader(uint8_t header=0) {
 	//script =  insert javascript script for graphs or not
 	//return the HTML header and top of body
 
-	bool script = true;
-	String JScript = "";
-	if (script) {
-		JScript = F("\
-<script type='text/javascript' src='graphs.js'></script>\n\
-  <script type='text/javascript'>\n\
-    var heap,temp,digi;\n\
-    var reloadPeriod = 1000;\n\
-    var running = false;\n\
-    \n\
-    function loadValues(){\n\
-      if(!running) return;\n\
-      var xh = new XMLHttpRequest();\n\
-      xh.onreadystatechange = function(){\n\
-        if (xh.readyState == 4){\n\
-          if(xh.status == 200) {\n\
-            var res = JSON.parse(xh.responseText);\n\
-            heap.add(res.heap);\n\
-            temp.add(res.analog);\n\
-            digi.add(res.gpio);\n\
-            if(running) setTimeout(loadValues, reloadPeriod);\n\
-          } else running = false;\n\
-        }\n\
-      };\n\
-      xh.open('GET', '/all', true);\n\
-      xh.send(null);\n\
-    };\n\
-    \n\
-    function run(){\n\
-      if(!running){\n\
-        running = true;\n\
-        loadValues();\n\
-      }\n\
-    }\n\
-    \n\
-    function onBodyLoad(){\n\
-      var refreshInput = document.getElementById('refresh-rate');\n\
-      refreshInput.value = reloadPeriod;\n\
-      refreshInput.onchange = function(e){\n\
-        var value = parseInt(e.target.value);\n\
-        reloadPeriod = (value > 0)?value:0;\n\
-        e.target.value = reloadPeriod;\n\
-      }\n\
-      var stopButton = document.getElementById('stop-button');\n\
-      stopButton.onclick = function(e){\n\
-        running = false;\n\
-      }\n\
-      var startButton = document.getElementById('start-button');\n\
-      startButton.onclick = function(e){\n\
-        run();\n\
-      }\n\
-      \n\
-      temp = createGraph(document.getElementById('analog'), 'Analog Input', 100, 128, 0, 1023, false, 'cyan');\n\
-      heap = createGraph(document.getElementById('heap'), 'Current Heap', 100, 125, 0, 30000, true, 'orange');\n\
-      digi = createDigiGraph(document.getElementById('digital'), 'GPIO', 100, 146, [0, 4, 5, 16], 'gold');\n\
-      run();\n\
-    }\n\
-  </script>\n\
-		");
-	}
-
-	String w;
+	String w; w.reserve(4096);
 	w += F("\
 		<style>\n\
 		<!-- colors schemes: dark grey: #757571   cyan: #6ABED8    white: #F0F0F0  light gray: #B0ABA0  black: #181712 -->\n\
@@ -1816,21 +1779,84 @@ String HTMLHeader() {
 				background-color: #33b5e5;\n\
 				box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);\n\
 			}\n\
-			body { background-color: #B0ABA0; font-family:Consolas; Color: #F0F0F0; }\n\
+			p.main {\n\
+				font-size:20px;\n\
+				text-align: left;\n\
+			}\n\
+			body { background-color: #B0ABA0; font-family:monospace; Color: #F0F0F0; }\n\
 		</style>\n");
 
-	w += JScript; //add the scripr or not
+	
+	if (header == 1) {
+		w += F("\
+<script type='text/javascript' src='graphs.js'></script>\n\
+  <script type='text/javascript'>\n\
+    var heap,s,digi;\n\
+    var reloadPeriod = 1000;\n\
+    var running = false;\n\
+    \n\
+    function loadValues(){\n\
+      if(!running) return;\n\
+      var xh = new XMLHttpRequest();\n\
+      xh.onreadystatechange = function(){\n\
+        if (xh.readyState == 4){\n\
+          if(xh.status == 200) {\n\
+            var res = JSON.parse(xh.responseText);\n\
+            heap.add(res.heap);\n\
+            s.add(res.analog);\n\
+            digi.add(res.gpio);\n\
+            if(running) setTimeout(loadValues, reloadPeriod);\n\
+          } else running = false;\n\
+        }\n\
+      };\n\
+      xh.open('GET', '/all', true);\n\
+      xh.send(null);\n\
+    };\n\
+    \n\
+    function run(){\n\
+      if(!running){\n\
+        running = true;\n\
+        loadValues();\n\
+      }\n\
+    }\n\
+    \n\
+    function onBodyLoad(){\n\
+      var refreshInput = document.getElementById('refresh-rate');\n\
+      refreshInput.value = reloadPeriod;\n\
+      refreshInput.onchange = function(e){\n\
+        var value = parseInt(e.target.value);\n\
+        reloadPeriod = (value > 0)?value:0;\n\
+        e.target.value = reloadPeriod;\n\
+      }\n\
+      var stopButton = document.getElementById('stop-button');\n\
+      stopButton.onclick = function(e){\n\
+        running = false;\n\
+      }\n\
+      var startButton = document.getElementById('start-button');\n\
+      startButton.onclick = function(e){\n\
+        run();\n\
+      }\n\
+      \n\
+      s = createGraph(document.getElementById('analog'), 'Analog Input', 100, 128, 0, 1023, false, 'cyan');\n\
+      heap = createGraph(document.getElementById('heap'), 'Current Heap', 100, 125, 0, 30000, true, 'orange');\n\
+      digi = createDigiGraph(document.getElementById('digital'), 'GPIO', 100, 146, [0, 4, 5, 16], 'gold');\n\
+      run();\n\
+    }\n\
+  </script>\n\
+		");
+	}
 
 
 	w += F("</head>\n\
 		   	<body");
 
-	if (script) w += F(" onload='onBodyLoad()'"); //Add the load for the script or not
+	if (header==1) w += F(" onload='onBodyLoad()'"); //Add the load for the script or not
 	
 
-w+= F(">\n\
+	w += F(">\n\
 		<div class='header'>\n\
-					<h1>"); w += (ProjectName);  w += F(" - <a href='HTTP://"); w += (ProjectName); w += F(".local'>HTTP://");  w += (ProjectName);  w += F(".local</a></h1>\n\
+					<h1>"); w += (ProjectName);  w += F("</h1>\n\
+			<p style='text-align:right;'><a href='HTTP://"); w += (ProjectName); w += F(".local'>HTTP://");  w += (ProjectName);  w += F(".local</a> - ");  w += updatetimeStamp();  w += F("</p>\
 		</div>\n\
 		<div class='row'>\n\
 			<div class='col-31 menu'>\n\
@@ -1843,7 +1869,7 @@ w+= F(">\n\
 				<a href='/Network'>NETWORK</a>\n\
 			</div>\n\
 			<div class='col-31 menu'>\n\
-				<a href='/System'>SYSTEM</a>\n\
+				<a href='/Admin'>ADMIN</a>\n\
 			</div>\n\
 		</div>\n");
 	return w;
@@ -1866,15 +1892,13 @@ String HTMLContentBoxBottom() {
 		</div>\n");
 }//===============================================================================================
 void HTTPNetwork(void) {
-	//Create a temp string to concat the wegpage
-	String w = "";
+	//Create a s string to concat the wegpage
+	String w = ""; w.reserve(8192);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
 		return;
 	}
-
-	String temp;
 
 	w += HTMLTop();
 	w += HTMLMeta();
@@ -1888,7 +1912,7 @@ void HTTPNetwork(void) {
 	w += wifiGetStatusSTAHTML();//update webpage   
 	w += F("\
 					<form method='post' action='/ToggleWiFi'>\n\
-						<input type='submit' style='width:225px; height:50px; font-size:40px''>\n\
+						<input type='submit' value='Toggle WiFi' style='width:225px; height:50px; font-size:40px''>\n\
 					</form>\n\
 				</div>\n\n\
 				<div class = 'a50'>\n\
@@ -1937,13 +1961,13 @@ void HTTPNetwork(void) {
 }//===============================================================================================
 void HTTPNetworkSubmit(void) {
 
-	String w = "";
+	String w = ""; w.reserve(3000);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
 		return;
 	}
-	//Get the HTML arguments passed from the webpage and assign then to temp variables
+	//Get the HTML arguments passed from the webpage and assign then to s variables
 	String ssid, pw;
 	IPAddress ip, sn, gw;
 	bool _AutoDHCPRem;
@@ -1971,15 +1995,15 @@ void HTTPNetworkSubmit(void) {
 
 	w += HTMLTop();
 	w += F("\
-		<meta charset='utf-8'  http-equiv='refresh' content='20' url='http://"); w += ip.toString(); w += F("'/>");
+		<meta charset='utf-8'  http-equiv='refresh' content='30' url='http://"); w += ip.toString(); w += F("'/>");
 	w += HTMLTitle("Submit");
 	w += HTMLHeader();
 	w += HTMLContentBoxTop();
 	w += F("\
-				<h2>Attempting to connect to WiFi. Access point will be disconnected, and device will reboot.  Note that rebooting is not reliable and may require you to cycle power or push the reset button<h2>\
+				<h2>Attempting to connect to WiFi. Access point will be disconnected, and device will reboot.<h2>\
 				<h2>If successful after a reboot, a website will be accessible on the selected network at IP Address: <a href='http://"); w += ip.toString(); w += F("/'>"); w += ip.toString(); w += F("</a><\h2>\
 				<h2>If unsuccessful after a reboot the access point will be reinitialized<h2>\
-				<h2>This page will redirect after 20sec to  <a href='http://"); w += ip.toString(); w += F("'>"); w += ip.toString(); w += F("</a><h2>");
+				<h2>This page will redirect after 30sec to <a href='http://"); w += ip.toString(); w += F("'>"); w += ip.toString(); w += F("</a><h2>");
 	w += HTMLContentBoxBottom();
 	w += HTMLBottom();
 	HTTPserver.send(200, F("text/html"), w);
@@ -1998,7 +2022,7 @@ void HTTPNetworkSubmit(void) {
 }//===============================================================================================
 void HTTPRoot() {
 
-	String w = "";
+	String w = ""; w.reserve(3000);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
@@ -2011,6 +2035,8 @@ void HTTPRoot() {
 	w += HTMLHeader();
 	w += HTMLContentBoxTop();
 	w += F("\
+			<p class='main'>");  w += String(FUNCTIONAL_DESCRIPTION); w += F("</p>\n\
+			<p class='main'>");  w += CONTACT_INFORMATION; w += F("</p>\n\
 			<h3>A telnet / RAW server has been set up at this IP Address on port: ");  w += TELNETPORT; w += F("</h3>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLBottom();
@@ -2020,7 +2046,7 @@ void HTTPRoot() {
 }//===============================================================================================
 void HTTP404() {
 
-	String w = "";
+	String w = ""; w.reserve(2500);
 	w += HTMLTop();
 	w += HTMLMeta();
 	w += HTMLTitle(F("404"));
@@ -2042,21 +2068,16 @@ void HTTP404() {
 }//===============================================================================================
 void HTTPData() {
 
-	String w = "";
-	String x = "";
+	String w = ""; w.reserve(8192);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
 		return;
 	}
 	String msg = "";
-	String refresh="";
 	if (HTTPserver.hasArg(F("refresh"))) {//Process  a POST request to this webpage to change the refresh interval
-		refresh = HTTPserver.arg(F("refresh"));
-		Serial.println(refresh);
-		msg = F("Page refresh rate set to");
-		msg += refresh;
-		msg += F("s");
+		refresh = HTTPserver.arg(F("refresh")).toInt();
+		msg = F("Page refresh rate set to "); msg += refresh; msg += F("s");
 	}
 
 
@@ -2084,7 +2105,7 @@ void HTTPData() {
 
 
 	w += HTMLTop();
-	if (refresh == "") {
+	if (refresh == 0) {
 		w += HTMLMeta();
 	}
 	else {
@@ -2099,11 +2120,14 @@ void HTTPData() {
 	}
 	w += HTMLContentBoxTop();
 	w += F("\
-			<label style='text-align:center; font-size:40px'>Sensor0 Data: "); w += String(Data[0].Actual, Data[0].precision); w += " ";  w += Data[0].EngUnits;  w += F("</label><label style='text-align:center; font-size:20px'> (Raw Data: "); w += String(Data[0].raw, Data[0].precisionRaw); w += F(")</label><p>\n\
-			<label style='text-align:center; font-size:40px'>Sensor1 Data: "); w += String(Data[1].Actual, Data[1].precision); w += " ";  w += Data[1].EngUnits;  w += F("</label><label style='text-align:center; font-size:20px'> (Raw Data: "); w += String(Data[1].raw, Data[1].precisionRaw); w += F(")</label><p>\n\
+			<label style='text-align:left; font-size:40px'>Sensor0 Data: "); w += String(Data[0].Actual, Data[0].precision); w += " ";  w += Data[0].EngUnits;  w += F("</label>\n\
+			<label style='text-align:left; font-size:20px'> (Raw Data: "); w += String(Data[0].raw, Data[0].precisionRaw); w += F(")</label><p>\n\
+			<label style='text-align:left; font-size:40px'>Sensor1 Data: "); w += String(Data[1].Actual, Data[1].precision); w += " ";  w += Data[1].EngUnits;  w += F("</label>\n\
+			<label style='text-align:left; font-size:20px'> (Raw Data: "); w += String(Data[1].raw, Data[1].precisionRaw); w += F(")</label><p>\n\
 			telnet / RAW ethernet commands sent to this IP Address on port: ");  w += TELNETPORT; w += F("<br>\n\
 			<ul>\n\
-				<li>'t' (ASCII 0x74) 5 bytes will return data in ASCII characters followed by a null character. e.g. '45.65N' (where N is ASCII 0x00).</li>\n\
+				<li>'s0' Sensor 0 scaled data</li>\n\
+				<li>'s1' Sensor 1 scaled data</li>\n\
 			</ul>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLContentBoxTop();
@@ -2153,10 +2177,10 @@ void HTTPData() {
 
 }//===============================================================================================
 void HTTPToggleWiFi() {
-	//Get the HTML arguments passed from the webpage and assign then to temp variables
+	//Get the HTML arguments passed from the webpage and assign then to s variables
 	bool on = bitRead(WiFi.getMode(), 0);
 
-	String w = "";
+	String w = "";  w.reserve(3000);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
@@ -2169,7 +2193,7 @@ void HTTPToggleWiFi() {
 	w += HTMLContentBoxTop();
 	if (on == false) {//turn WiFi On
 		w += F("\
-			<h1>WiFi has been turned ON. WiFi is attempting to connect.</h1>\n");
+			<h1>WiFi has been turned ON. WiFi is atsting to connect.</h1>\n");
 	}
 	else {
 		w += F("\
@@ -2179,7 +2203,7 @@ void HTTPToggleWiFi() {
 
 	w += HTMLContentBoxTop();
 	w += F("\
-			<h2>The device will reboot after the attempt.  Software rebooting does not work half of the time.  Please restart device after 10sec or so.</h2>\n");
+			<h2>The device is rebooting...</h2>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLBottom();
 
@@ -2196,7 +2220,7 @@ void HTTPToggleWiFi() {
 void HTTPToggleAP() {
 
 	bool on = isAPON();
-	String w;
+	String w;  w.reserve(3000);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
@@ -2223,7 +2247,7 @@ void HTTPToggleAP() {
 	w += HTMLContentBoxBottom();
 	w += HTMLContentBoxTop();
 	w += F("\
-			<h2>The device is rebooting.  Software rebooting does not work half of the time.  Please restart device after 10sec or so.</h2>\n");
+			<h2>The device is restarting...</h2>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLBottom();
 
@@ -2267,7 +2291,7 @@ void HTTPhandleLogin() {
 		Serial.println(F("Log in Failed"));
 	}
 
-	String w = "";
+	String w = ""; w.reserve(3000);
 	w += HTMLTop();
 	w += HTMLMeta();
 	w += HTMLTitle("Login");
@@ -2289,9 +2313,9 @@ void HTTPhandleLogin() {
 	w += HTMLBottom();
 	HTTPserver.send(200, F("text/html"), w);
 }//===============================================================================================
-void HTTPSystem() {
+void HTTPAdmin() {
 
-	String w = "";
+	String w = "";  w.reserve(10000);
 	String msg = "";
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
@@ -2324,7 +2348,7 @@ void HTTPSystem() {
 
 	if (HTTPserver.hasArg(F("FactoryDefaultConfirm"))) {//Process  a POST request to this webpage
 		msg += F("\
-		<form action='/System' method='POST'> \n\r\
+		<form action='/Admin' method='POST'> \n\r\
 			<input type='submit' name='FactoryDefault' value='CONFIRM Reset to Factory Default' style='color:red; width:700px; height:50px; font-size:40px'>\n\
 		</form>\
 		You will need to reconnect to the device\n");
@@ -2338,15 +2362,25 @@ void HTTPSystem() {
 		//msg = "Factory Default Cleared.  Reboot device manually.";
 	}
 
+	if (HTTPserver.hasArg(F("NTPTimeZone")) && HTTPserver.hasArg(F("NTPdstRule")) && HTTPserver.hasArg(F("NTPServerName"))) {//Process a POST request to this webpage
+		NTPTimeZone = HTTPserver.arg(F("NTPTimeZone")).toInt();
+		NTPdstRule = HTTPserver.arg(F("NTPdstRule")).toInt();
+		NTPServerName = HTTPserver.arg(F("NTPServerName"));
+		setTimeZone(NTPTimeZone); //update time library
+		setdstRule(NTPdstRule); //update time library
+		saveConfig(); //save config.json
+		msg = "NTP Time settings updated";
+
+	}
+
 	if (HTTPserver.hasArg(F("restart"))) {//Process  a POST request to this webpage to change the project name
 		Restart();
-		Serial.println("Device Restart");
 	}
 
 	w += HTMLTop();
 	w += HTMLMeta();
-	w += HTMLTitle(F("System"));
-	w += HTMLHeader();
+	w += HTMLTitle(F("Admin"));
+	w += HTMLHeader(true); //set the request to add the java script to the header
 	if (msg !="") { //Insert a row at the top for POST responses
 		w += HTMLContentBoxTop();
 		w += F("<h2 style='color:red;'>"); w += msg; w += F("</h2>");
@@ -2355,7 +2389,7 @@ void HTTPSystem() {
 	w += HTMLContentBoxTop();
 	w += F("\
 		<h1>Update Website Login:<\h1>\n\
-		<form action='/System' method='POST'> \n\r\
+		<form action='/Admin' method='POST'> \n\r\
 			<input type='text' name='USERNAME' placeholder='User Name' maxlength=40 required style='width:600px; height:50px; font-size:40px'><br><p> \n\r\
 			<input type='password' name='PASSWORD' placeholder='Password' maxlength=40 required style='width:600px; height:50px; font-size:40px'><br><p> \n\r\
 			<input type='password' name='PASSWORD2' placeholder='Retype Password' maxlength=40 required style='width:600px; height:50px; font-size:40px'><br><p> \n\r\
@@ -2366,16 +2400,16 @@ void HTTPSystem() {
 	w += HTMLContentBoxTop();
 	w += F("\
 		<h1>Change Project Name:<\h1>\n\
-		<form action='/System' method='POST'> \n\r\
-			<input type='text' name='ProjectName' value='"); w += ProjectName; w+= F("' maxlength=48 required style='width:450px; height:50px; font-size:40px'><p>\n\r\
+		<form action='/Admin' method='POST'> \n\r\
+			<input type='text' name='ProjectName' value='"); w += ProjectName; w+= F("' maxlength=32 required style='width:450px; height:50px; font-size:40px'><p>\n\r\
 			<input type='submit' name='SUBMIT' value='Change Project Name' style='width:450px; height:50px; font-size:40px'><p>\n\
-						do not use any spaces, symbols, or puncuation marks, hyphens are fine. Project Name also becomes the MDNS responder name (only updated after reboot).  I.E. project Name is 'TempSensor', this webpage will be accessible at Http://TempSensor.local\n\
+						<p class='main'>do not use any spaces, symbols, or puncuation marks, hyphens are fine. Project Name also becomes the MDNS responder name (only updated after a restart).  I.E. project Name is 'sSensor', this webpage will be accessible at <a href='HTTP://"); w += (ProjectName); w += F(".local'>HTTP://");  w += (ProjectName);  w += F(".local</a></p>\n\
 		</form>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLContentBoxTop();
 	w += F("\
 			<h1>System Info:</h1>\n\
-				<h3>Firmware Version: <a href='update'>");  w += FirmwareVersion; w += F("</a></h3>\n\
+				<h3>Firmware Version: ");  w += FirmwareVersion; w += F(" <a href='update'>Update Firmware</a></h3>\n\
 			<ul>\n\
 				<li>UpTime = ");    w += getUpTimeString();	 w += F("</li>\n\
 				<li>FreeHeap = ");		w += ESP.getFreeHeap(); 				w += F(" B</li>\n\
@@ -2397,11 +2431,27 @@ void HTTPSystem() {
 				<li>ResetInfo = ");		w += ESP.getResetInfo(); 				w += F(" </li>\n\
 				<li>CycleCount = ");	w += ESP.getCycleCount(); 				w += F(" </li>\n\
 			</ul>\
-			<h3><a href='edit'>Edit SPIFFS (On board flash file system)</a> Use at your own risk!</h3>\n\n");
+			<a href='edit'>Edit SPIFFS (On board flash file system)</a> Use at your own risk!  Takes up to 30seconds to load\n\n");
 
+	w += HTMLContentBoxBottom();
+
+
+	w += HTMLContentBoxTop();
+	w += F("\
+			<form method='post' action='/Admin'>\n\
+				<label style='width:800px; height:50px; font-size:40px'>NTP pool: </label>\n\
+					<input type='text' name='NTPServerName' value='"); w += NTPServerName; w += F("' maxlength=32 required style='width:450px; height:50px; font-size:40px'><p>\n\r\
+				<label style='width:800px; height:50px; font-size:40px'>Timezone offset from UTC:</label>\n\
+					<input name='NTPTimeZone' maxlength=3 type='number' min='-12' max='12' style='text-align:center; width:100px; height:50px; font-size:40px' required value='"); w += NTPTimeZone; w += F("'>e.g. -5 is EST, -8 is PST, 1 is CET<p>\n\
+					<input type='radio' style='height:50px; width:50px; vertical-align:middle;' name='NTPdstRule' value='0'"); if (NTPdstRule==0) w += F(" checked"); w += F("><label style='width:500px; height:50px; font-size:40px vertical-align:middle'>No DST Adjustment</label><p>\n\
+					<input type='radio' style='height:50px; width:50px; vertical-align:middle;' name='NTPdstRule' value='1'"); if (NTPdstRule==1) w += F(" checked"); w += F("><label style='width:500px; height:50px; font-size:40px vertical-align:middle '>Follow USA/Canadian DST rules</label><p>\n\
+					<input type='radio' style='height:50px; width:50px; vertical-align:middle;' name='NTPdstRule' value='2'"); if (NTPdstRule==2) w += F(" checked"); w += F("><label style='width:500px; height:50px; font-size:40px vertical-align:middle '>Follow Europeen DST rules</label><p>\n\
+				<input type='submit' value='Update Time Settings' style='width:400px; height:50px; font-size:40px''>\n\
+			</form>\n");
 	w += HTMLContentBoxBottom();
 	w += HTMLContentBoxTop();
 	w += F("\
+		<h1>View live data</h1>\
 		<div id='controls' style='display: block; border: 1px solid rgb(68, 68, 68); padding: 5px; margin: 5px; width: 362px;'>\n\
 			<label>Period (ms):</label>\n\
 			<input type='number' id='refresh-rate'/>\n\
@@ -2415,11 +2465,11 @@ void HTTPSystem() {
 	w += HTMLContentBoxBottom();
 	w += HTMLContentBoxTop();
 	w += F("\
-		<form action='/System' method='POST'> \n\r\
+		<form action='/Admin' method='POST'> \n\r\
 			<input type='submit' name='FactoryDefaultConfirm' value='Reset to Factory Default' style='width:600px; height:50px; font-size:40px'>\n\
 		</form><br><p>\n");
 	w += F("\
-		<form action='/System' method='POST'> \n\r\
+		<form action='/Admin' method='POST'> \n\r\
 			<input type='submit' name='restart' value='Restart device' style='width:400px; height:50px; font-size:40px'>\n\
 		</form>\n");
 	w += HTMLContentBoxBottom();
@@ -2430,7 +2480,7 @@ void HTTPSystem() {
 void HTTPDownload() {
 	//Function that is not directly called by code, but a webpage can be manually typed in and the server will download the 
 	//e.g. http://192.168.1.250/download?file=/config.json.txt will download the config.json.txt
-	String w = "";
+	String w = ""; w.reserve(100);
 	if (!is_authentified()) {
 		w = HTMLRedirectLogin();
 		HTTPserver.sendContent(w);
@@ -2447,7 +2497,7 @@ void HTTPDownload() {
 		size_t sent = HTTPserver.streamFile(file, contentType);
 		file.close();
 	}
-	HTTPserver.send(200, "text/plain", w);
+	//HTTPserver.send(200, F("text/plain"), w);
 	//}
 
 	//	http://192.168.1.250/download?file=/config.json.txt
@@ -2471,28 +2521,26 @@ bool is_authentified() {
 void Restart() {
 
 	uint8_t i;
-	String temp = F("DEVICE IS RESTARTING.  This is not always reliable, you may need to reset it manually\n\r");
-	String temp2 = F(" you will need to reconnect, press ctrl+] if using windows telnet \n\r");
+	String s = F("DEVICE IS RESTARTING, you will need to reconnect\n\r");
 
 	for (i = 0; i < TELNET_MAX_CLIENTS; i++) {//alert all clients that a restart is occuring
-		Telnet[i].clients.print(temp);
-		Telnet[i].clients.print(temp2);
+		Telnet[i].clients.print(s);
 		Telnet[i].clients.flush(); //flush all outgoing data to client
 		Telnet[i].clients.stop(); //stop the clients, probably not needed, just looking for a way to immediatly alert the client that they are being disconnected immediatly, but it didn't work.  But it can't hurt
-		delay(2);//probably not needed...
+		//delay(2);//probably not needed...
 	}
 
-	Serial.print(temp); //tell the serial monitor
+	Serial.print(s); //tell the serial monitor
 	Serial.flush(); //flush all outgoing serial data to client
-	delay(2);//probably not needed...
+	//delay(2);//probably not needed...
 
-			 //ESP.restart();
-	ESP.reset();
+	ESP.restart();
+	//ESP.reset();
 
 }//===============================================================================================
 bool isAPON() {
-	IPAddress _temp = WiFi.softAPIP();
-	if (_temp[0] == 0 && _temp[1] == 0 && _temp[2] == 0 && _temp[3] == 0) {
+	IPAddress _s = WiFi.softAPIP();
+	if (_s[0] == 0 && _s[1] == 0 && _s[2] == 0 && _s[3] == 0) {
 		return false;
 	}
 	else {
@@ -2513,13 +2561,13 @@ String getUpTimeString() {
 
 	String sReturn;
 	sReturn += day;
-	sReturn += "d";
+	sReturn += F("d");
 	sReturn += hr;
-	sReturn += "h";
+	sReturn += F("h");
 	sReturn += min;
-	sReturn += "m";
+	sReturn += F("m");
 	sReturn += sec;
-	sReturn += "s";
+	sReturn += F("s");
 	return sReturn;
 
 }//===============================================================================================
@@ -2542,7 +2590,7 @@ uint8_t setPrecision(float Lo, float Hi) {
 	if (f <= 1.0		&& f>0.1) { return 5; }
 	if (f <= 0.1) { return  6; }
 
-}
+}//===============================================================================================
 String ftos(float f, float p) {
 	//convert a float to a string with precision and trim whitespace
 	String w = "";
@@ -2569,21 +2617,21 @@ String formatBytes(size_t bytes){
 String getContentType(String filename){
 	//adapted from https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WebServer/examples/FSBrowser
 	//look up table for file extension to HTML ContentType
-	if (HTTPserver.hasArg("download")) return "application/octet-stream";
-	else if (filename.endsWith(".htm")) return "text/html";
-	else if (filename.endsWith(".html")) return "text/html";
-	else if (filename.endsWith(".css")) return "text/css";
-	else if (filename.endsWith(".js")) return "application/javascript";
-	else if (filename.endsWith(".json")) return "text/html"; //added from original code
-	else if (filename.endsWith(".png")) return "image/png";
-	else if (filename.endsWith(".gif")) return "image/gif";
-	else if (filename.endsWith(".jpg")) return "image/jpeg";
-	else if (filename.endsWith(".ico")) return "image/x-icon";
-	else if (filename.endsWith(".xml")) return "text/xml";
-	else if (filename.endsWith(".pdf")) return "application/x-pdf";
-	else if (filename.endsWith(".zip")) return "application/x-zip";
-	else if (filename.endsWith(".gz")) return "application/x-gzip";
-	return "text/plain";
+	if (HTTPserver.hasArg(F("download"))) return F("application/octet-stream");
+	else if (filename.endsWith(F(".htm"))) return F("text/html");
+	else if (filename.endsWith(F(".html"))) return F("text/html");
+	else if (filename.endsWith(F(".css"))) return F("text/css");
+	else if (filename.endsWith(F(".js"))) return F("application/javascript");
+	else if (filename.endsWith(F(".json"))) return F("text/html"); //added from original code
+	else if (filename.endsWith(F(".png"))) return F("image/png");
+	else if (filename.endsWith(F(".gif"))) return F("image/gif");
+	else if (filename.endsWith(F(".jpg"))) return F("image/jpeg");
+	else if (filename.endsWith(F(".ico"))) return F("image/x-icon");
+	else if (filename.endsWith(F(".xml"))) return F("text/xml");
+	else if (filename.endsWith(F(".pdf"))) return F("application/x-pdf");
+	else if (filename.endsWith(F(".zip"))) return F("application/x-zip");
+	else if (filename.endsWith(F(".gz"))) return F("application/x-gzip");
+	return F("text/plain");
 }//===============================================================================================
 bool handleFileRead(String path){
 	//adapted from https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WebServer/examples/FSBrowser
@@ -2603,17 +2651,16 @@ bool handleFileRead(String path){
 			return false;
 		}
 
-	//Serial.println("handleFileRead: " + path);
+	//Serial.println(F("handleFileRead: ") + path);
 	//if (path.endsWith("/")) path += "index.htm"; //part of original code, I'm not using the root directory of "/"
 	String contentType = getContentType(path); //get the HTML content type by looking at the file extension
-	String pathWithGz = path + ".gz"; //add .gz to the end of the file name just to check its existance next.  FSBrowser data folder came with special .gz files
+	String pathWithGz = path + F(".gz"); //add .gz to the end of the file name just to check its existance next.  FSBrowser data folder came with special .gz files
 										//for example the FSBroswer reqeusts "graphs.js", but "graphs.js.gz" is the name of the file in the data folder updated to SPIFFS
 	if (SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)){//check to see if the file exists
 		if (SPIFFS.exists(pathWithGz)) path = pathWithGz; //its the special .gz files, update the path with the actual path.
 		File file = SPIFFS.open(path, "r");
 		size_t sent = HTTPserver.streamFile(file, contentType);
 		file.close();
-		Serial.print(file); Serial.println(" streamed");
 		return true;
 	}
 	return false;
@@ -2627,7 +2674,7 @@ void handleFileUpload(){
 		HTTPserver.sendContent(w);
 		return;
 	}
-	if (HTTPserver.uri() != "/edit") return; //function only accessible from the edit webpage
+	if (HTTPserver.uri() != F("/edit")) return; //function only accessible from the edit webpage
 	HTTPUpload& upload = HTTPserver.upload();
 	if (upload.status == UPLOAD_FILE_START){
 		String filename = upload.filename;
@@ -2657,15 +2704,15 @@ void handleFileDelete(){
 		HTTPserver.sendContent(w);
 		return;
 	}
-	if (HTTPserver.args() == 0) return HTTPserver.send(500, "text/plain", "BAD ARGS");
+	if (HTTPserver.args() == 0) return HTTPserver.send(500, F("text/plain"), F("BAD ARGS"));
 	String path = HTTPserver.arg(0);
 	Serial.println("handleFileDelete: " + path);
-	if (path == "/")
-		return HTTPserver.send(500, "text/plain", "BAD PATH");
+	if (path == F("/"))
+		return HTTPserver.send(500, F("text/plain"), F("BAD PATH"));
 	if (!SPIFFS.exists(path))
-		return HTTPserver.send(404, "text/plain", "FileNotFound");
+		return HTTPserver.send(404, F("text/plain"), F("FileNotFound"));
 	SPIFFS.remove(path);
-	HTTPserver.send(200, "text/plain", "");
+	HTTPserver.send(200, F("text/plain"), "");
 	path = String();
 }//===============================================================================================
 void handleFileCreate(){
@@ -2679,19 +2726,19 @@ void handleFileCreate(){
 		return;
 	}
 	if (HTTPserver.args() == 0)
-		return HTTPserver.send(500, "text/plain", "BAD ARGS");
+		return HTTPserver.send(500, F("text/plain"), F("BAD ARGS"));
 	String path = HTTPserver.arg(0);
 	Serial.println("handleFileCreate: " + path);
-	if (path == "/")
-		return HTTPserver.send(500, "text/plain", "BAD PATH");
+	if (path == F("/"))
+		return HTTPserver.send(500, F("text/plain"), F("BAD PATH"));
 	if (SPIFFS.exists(path))
-		return HTTPserver.send(500, "text/plain", "FILE EXISTS");
+		return HTTPserver.send(500, F("text/plain"), F("FILE EXISTS"));
 	File file = SPIFFS.open(path, "w");
 	if (file)
 		file.close();
 	else
-		return HTTPserver.send(500, "text/plain", "CREATE FAILED");
-	HTTPserver.send(200, "text/plain", "");
+		return HTTPserver.send(500, F("text/plain"), F("CREATE FAILED"));
+	HTTPserver.send(200, F("text/plain"), "");
 	path = String();
 }//===============================================================================================
 void handleFileList() {
@@ -2704,14 +2751,14 @@ void handleFileList() {
 		HTTPserver.sendContent(w);
 		return;
 	}
-	if (!HTTPserver.hasArg("dir")) { HTTPserver.send(500, "text/plain", "BAD ARGS"); return; }
+	if (!HTTPserver.hasArg(F("dir"))) { HTTPserver.send(500, F("text/plain"), F("BAD ARGS")); return; }
 
-	String path = HTTPserver.arg("dir");
+	String path = HTTPserver.arg(F("dir"));
 	//Serial.println(F("handleFileList: ") + path);
 	Dir dir = SPIFFS.openDir(path);
 	path = String();
 
-	String output = "[";
+	String output = F("[");
 	while (dir.next()){
 		File entry = dir.openFile("r");
 		if (output != "[") output += ',';
@@ -2724,54 +2771,196 @@ void handleFileList() {
 		entry.close();
 	}
 
-	output += "]";
-	HTTPserver.send(200, "text/json", output);
+	output += F("]");
+	HTTPserver.send(200, F("text/json"), output);
 }//===============================================================================================
-String getSPIFFSTextFile(String filename) {
-	//Read a text based file on SPIFFS and return it in plain text for editing
-	//This is called from HTTPJson when filling in the text area of config.networkjson.txt for editing
-	//debug
-	//Serial.print(F("getSPIFFSFile reading SPIFFS File: ")); Serial.println(filename);
+void launchWeb(void) {
+	//Initialize webpages
 
-	//read in text based file
-	File f = SPIFFS.open(filename, "r");
-	if (!f) { //failure to open file
-		GlobalErrorString = F("getSPIFFSTextFile ERROR: Failed to open ");
-		GlobalErrorString += filename;
-		GlobalErrorString += F(" file from SPIFFS");
-		goto Bottom;
+#ifdef DEBUG
+	Serial.println("#DEBUG: 'server' started");
+#endif
+	//initialize MDNS responder
+	char temp[33];
+	ProjectName.toCharArray(temp, ProjectName.length()+1);
+	if (!MDNS.begin("wef")) {
+		Serial.println(F("MDNS responder failed to start"));
 	}
 	else {
-		char buf[CONFIGJSONFILZESIZE];
-		int size = f.size();
-		//check file size
-		if (size > CONFIGJSONFILZESIZE) {
-			GlobalErrorString = F("getSPIFFSTextFile ERROR: file ");
-			GlobalErrorString += filename;
-			GlobalErrorString += F(" is too large : ");
-			GlobalErrorString += formatBytes(size);
-			GlobalErrorString += F(" > ");
-			GlobalErrorString += formatBytes(CONFIGJSONFILZESIZE);
-			goto Bottom;
-		}
-		else {//file size is OK
-			f.readBytes(buf, size);
-		}
-		f.close(); //close the file normally
-		Serial.println(buf);
-		return buf;
+		Serial.print(F("mDNS service started: ")); Serial.println(temp);
+		MDNS.addService(F("http"), F("tcp"), 80);
+		MDNS.addService(F("telnet"), F("tcp"), 23);
 	}
+	//Setup all webpages
+	HTTPserver.on("/", HTTPRoot);
+	HTTPserver.on("/login", HTTPhandleLogin);
+	HTTPserver.on("/data", HTTPData);
+	HTTPserver.on("/Network", HTTPNetwork);
+	HTTPserver.on("/NetworkSubmit", HTTP_POST, HTTPNetworkSubmit);
+	HTTPserver.on("/ToggleWiFi", HTTP_POST, HTTPToggleWiFi);
+	HTTPserver.on("/ToggleAP", HTTP_POST, HTTPToggleAP);
+	HTTPserver.on("/Admin", HTTPAdmin);
+	HTTPserver.on("/download", HTTPDownload);
 
-Bottom:
-	//Process any error by printing it to Serial closeing the file and returning
-	Serial.println(GlobalErrorString);
-	f.close();
-	GlobalErrorCode = 1;
-	return F("ERROR");
+	//SPIFFS
+	//webpage /edit
+	HTTPserver.on("/list", HTTP_GET, handleFileList); //webpage /edit calls this to list files in its left pane
+	HTTPserver.on("/edit", HTTP_GET, []() {//Call SPIFFS file editor webpage stored in SPIFFS itself in the file edit.htm.gz, which is the file editor
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		if (!handleFileRead(F("/edit.htm"))) HTTP404();
+	});
+	//create file on /edit page
+	HTTPserver.on("/edit", HTTP_PUT, handleFileCreate);
+	//delete file used by /edit page
+	HTTPserver.on("/edit", HTTP_DELETE, handleFileDelete);
+	//first callback is called after the request has ended with all parsed arguments
+	//second callback handles file uploads at that location
+	HTTPserver.on("/edit", HTTP_POST, []() {
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		HTTPserver.send(200, F("text/plain"), "");
+	}, handleFileUpload);
 
+	//called when the url is not defined here, used to load content from SPIFFS
+	HTTPserver.onNotFound([]() {
+		if (!handleFileRead(HTTPserver.uri())) HTTP404(); //check to see if a file exists in SPIFFS, if not, 404
+	});
+
+	//create a Json for the graphs on /System webpage: heap status, analog input value and all GPIO statuses in one json call.   Used for graphs
+	HTTPserver.on("/all", HTTP_GET, []() {
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		String json = F("{");
+		json += "\"heap\":" + String(ESP.getFreeHeap());
+		json += ", \"analog\":" + String(analogRead(A0));
+		json += ", \"gpio\":" + String((uint32_t)(((GPI | GPO) & 0xFFFF) | ((GP16I & 0x01) << 16)));
+		json += F("}");
+		HTTPserver.send(200, F("text/json"), json);
+		json = String();
+	});
+
+	//Create overload functions required for OTA update, most of this was copied and pasted from examples with my HTML stuff added
+	HTTPserver.on("/update", HTTP_GET, []() {
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		w += HTMLTop();
+		w += HTMLMeta();
+		w += HTMLTitle(F("OTA Update"));
+		w += HTMLHeader();
+		w += HTMLContentBoxTop();
+		w += F("\
+							<h2> Upload new firmware</h2>\n\r\
+							<h3>Firmware Version: ");  w += FirmwareVersion; w += F("</h3>\n\
+							Select new file (*.bin), then press Upload and Update.<p>\
+							<form method='POST' action='/update' enctype='multipart/form-data'>\n\r\
+								<input type='file' accept='.bin' name='update' value='Select File'><p>\n\r\
+								<input type='submit' value='Upload and Update'>\n\r\
+							</form>\n\r\
+							Update takes about 20seconds and there is no progress bar.  Press only once, then be patient.");
+		w += HTMLContentBoxBottom();
+		w += HTMLBottom();
+		HTTPserver.send(200, F("text/html"), w);
+	});
+
+	HTTPserver.on("/update", HTTP_POST, []() {
+
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		HTTPserver.sendHeader(F("Connection"), F("close"));
+		w += HTMLTop();
+		w += HTMLMeta();
+		w += HTMLTitle(F("OTA Update Failed"));
+		w += HTMLHeader();
+		w += HTMLContentBoxTop();
+		w += (Update.hasError()) ? F("<h1>OTA Update Failed, device now restarting</h1>") : F("<h1>OTA Update succeeded, Device now restarting.</h1>");
+		w += HTMLContentBoxBottom();
+		w += HTMLBottom();
+		HTTPserver.send(200, F("text/html"), w);
+		Restart();
+	}, []() {
+		String w = "";
+		if (!is_authentified()) {
+			w = HTMLRedirectLogin();
+			HTTPserver.sendContent(w);
+			return;
+		}
+		HTTPUpload& upload = HTTPserver.upload();
+		if (upload.status == UPLOAD_FILE_START) {
+			Serial.setDebugOutput(true);
+			WiFiUDP::stopAll();
+			Serial.printf("Update: %s\n", upload.filename.c_str());
+			uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+			if (!Update.begin(maxSketchSpace)) {//start with max available size
+				Update.printError(Serial);
+				w += HTMLTop();
+				w += HTMLMeta();
+				w += HTMLTitle(F("OTA Update"));
+				w += HTMLHeader();
+				w += HTMLContentBoxTop();
+				w += F("Error: Max size exceeded");
+				w += HTMLContentBoxBottom();
+				w += HTMLBottom();
+				HTTPserver.send(200, F("text/html"), w);
+			}
+		}
+		else if (upload.status == UPLOAD_FILE_WRITE) {
+			if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+				Update.printError(Serial);
+
+				w += HTMLTop();
+				w += HTMLMeta();
+				w += HTMLTitle(F("OTA Update"));
+				w += HTMLHeader();
+				w += HTMLContentBoxTop();
+				w += F("Error: Updated size did not match file uploaded");
+				w += HTMLContentBoxBottom();
+				w += HTMLBottom();
+				HTTPserver.send(200, F("text/html"), w);
+			}
+		}
+		else if (upload.status == UPLOAD_FILE_END) {
+			if (Update.end(true)) { //true to set the size to the current progress
+				Serial.printf("Update Success: %u\nRestarting...\n", upload.totalSize);
+			}
+			else {
+				Update.printError(Serial);
+			}
+			Serial.setDebugOutput(false);
+		}
+		yield();
+	});
+
+	//here the list of headers to be recorded.   I uh...I have no idea what this means...
+	const char * headerkeys[] = { "User-Agent","Cookie" };
+	size_t headerkeyssize = sizeof(headerkeys) / sizeof(char*);
+	HTTPserver.collectHeaders(headerkeys, headerkeyssize); 	//ask server to track these headers
+
+															//Atually start the server
+	HTTPserver.begin();
 }//===============================================================================================
-
 bool loadConfig() {
+	//in the future I will create different json configs for different things
 	loadNetworkConfig();
 }//===============================================================================================
 bool loadNetworkConfig() {
@@ -2784,16 +2973,16 @@ bool loadNetworkConfig() {
 	//Open file
 		File f = SPIFFS.open(F("/config.json.txt"), "r");
 		if (!f) {
-			Serial.println(F("loadConfig ERROR : Failed to open /config.json.txt file"));
-			return 0;
+			Serial.println(F("loadNetworkConfig ERROR : Failed to open /config.json.txt file"));
+			return false;
 		}
 
 	//check size
 		size_t size = f.size();
 		if (size > 1024) { //why is this contrined to 1024 hard coded?
-			Serial.println(F("loadConfig ERROR : Config file size is too large"));
+			Serial.println(F("loadNetworkConfig ERROR : Config file size is too large"));
 			f.close();
-			return 0;
+			return false;
 		}
 
 	// Allocate a buffer to store contents of the file.
@@ -2809,123 +2998,133 @@ bool loadNetworkConfig() {
 	JsonObject& json = jsonBuffer.parseObject(buf.get());
 
 	if (json.success()) {//success
-
-		//Set Static IP
-			if (json.containsKey("STAip")) {
-				STAip[0] = json["STAip"][0];
-				STAip[1] = json["STAip"][1];
-				STAip[2] = json["STAip"][2];
-				STAip[3] = json["STAip"][3];
-
-				APip[0] = json["STAip"][0];
-				APip[1] = json["STAip"][1];
-				APip[2] = json["STAip"][2];
-				APip[2] += 1;
-				APip[3] = json["STAip"][3];
-			}
-			else {
-				GlobalErrorString = F("loadConfig ERROR : STAip key missing");
-				goto Bottom;
-			}
-		//Set subnet Mask
-			if (json.containsKey("STAsubnet")) {
-				STAsubnet[0] = json["STAsubnet"][0];
-				STAsubnet[1] = json["STAsubnet"][1];
-				STAsubnet[2] = json["STAsubnet"][2];
-				STAsubnet[3] = json["STAsubnet"][3];
-			}
-			else {
-				GlobalErrorString = F("loadConfig ERROR: STAsubnet key missing");
-				goto Bottom;
-			}
-		//Set gw
-			if (json.containsKey("STAgateway")) {
-				STAgateway[0] = json["STAgateway"][0];
-				STAgateway[1] = json["STAgateway"][1];
-				STAgateway[2] = json["STAgateway"][2];
-				STAgateway[3] = json["STAgateway"][3];
-			}
-			else {
-				GlobalErrorString = F("loadConfig ERROR: STAgateway key missing");
-				goto Bottom;
-			}
 		//Set project Name
-			if (json.containsKey("ProjectName")) {
-				ProjectName = json["ProjectName"].asString();
-			}
-			else {
-				GlobalErrorString = F("loadConfig ERROR: ProjectName key missing");
-				goto Bottom;
-			}
+			if (json.containsKey(F("ProjectName"))) {ProjectName = json[F("ProjectName")].asString();}
+			else { GlobalErrorMessage = F("loadConfig ERROR: ProjectName key missing"); }
 
 		//Set AutoDHCP
-			if (json.containsKey("AutoDHCP")) {
-				AutoDHCP = json["AutoDHCP"];
+			if (json.containsKey(F("AutoDHCP"))) {	AutoDHCP = json[F("AutoDHCP")];	}
+			else {GlobalErrorMessage = F("loadConfig ERROR: AutoDHCP key missing");}
+		
+		//Set member
+			if (json.containsKey(F("NTPServerName"))) { NTPServerName = json[F("NTPServerName")].asString(); }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: NTPServerName key missing");}
+			
+		//Set member
+			if (json.containsKey(F("NTPTimeZone"))) { NTPTimeZone = json[F("NTPTimeZone")]; }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: NTPTimeZone key missing");	}
+			
+		//Set member
+			if (json.containsKey(F("NTPdstRule"))) { NTPdstRule = json[F("NTPdstRule")]; }
+			else { GlobalErrorMessage = F("loadConfig ERROR: NTPdstRule key missing");}
+
+		//Set member
+			if (json.containsKey(F("EmailAddress"))) { EmailAddress = json[F("EmailAddress")].asString(); }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: EmailAddress key missing");}
+			
+		//Set member
+			if (json.containsKey(F("ThingSpeakEnable"))) { ThingSpeakEnable = json[F("ThingSpeakEnable")]; }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: ThingSpeakEnable key missing");}
+			
+		//Set member
+			if (json.containsKey(F("ThingSpeakChannel"))) { ThingSpeakChannel = json[F("ThingSpeakChannel")]; }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: ThingSpeakChannel key missing");}
+			
+		//Set member
+			if (json.containsKey(F("ThingSpeakapiKey"))) { ThingSpeakapiKey = json[F("ThingSpeakapiKey")].asString(); }
+			else {	GlobalErrorMessage = F("loadConfig ERROR: ThingSpeakapiKey key missing");}
+			
+		//Set Static IP
+			if (json.containsKey(F("STAip"))) {
+				STAip[0] = json[F("STAip")][0];
+				STAip[1] = json[F("STAip")][1];
+				STAip[2] = json[F("STAip")][2];
+				STAip[3] = json[F("STAip")][3];
+
+				APip[0] = json[F("STAip")][0];
+				APip[1] = json[F("STAip")][1];
+				APip[2] = json[F("STAip")][2];
+				APip[2] += 1;
+				APip[3] = json[F("STAip")][3];
 			}
 			else {
-				GlobalErrorString = F("loadConfig ERROR: AutoDHCP key missing");
-				goto Bottom;
+				GlobalErrorMessage = F("loadConfig ERROR : STAip key missing");
 			}
+		//Set subnet Mask
+			if (json.containsKey(F("STAsubnet"))) {
+				STAsubnet[0] = json[F("STAsubnet")][0];
+				STAsubnet[1] = json[F("STAsubnet")][1];
+				STAsubnet[2] = json[F("STAsubnet")][2];
+				STAsubnet[3] = json[F("STAsubnet")][3];
+			}
+			else {
+				GlobalErrorMessage = F("loadConfig ERROR: STAsubnet key missing");
+			}
+		//Set gw
+			if (json.containsKey(F("STAgateway"))) {
+				STAgateway[0] = json[F("STAgateway")][0];
+				STAgateway[1] = json[F("STAgateway")][1];
+				STAgateway[2] = json[F("STAgateway")][2];
+				STAgateway[3] = json[F("STAgateway")][3];
+			}
+			else {
+				GlobalErrorMessage = F("loadConfig ERROR: STAgateway key missing");
+			}		
 
 		//Get scaling for Data0
-			if (json.containsKey("Data0")) {
-				Data[0].rawLo = json["Data0"][0];
-				Data[0].rawHi = json["Data0"][1];
-				Data[0].scaleLo = json["Data0"][2];
-				Data[0].scaleHi = json["Data0"][3];
-				Data[0].EngUnits = json["Data0"][4].asString();
+			if (json.containsKey(F("Data0"))) {
+				Data[0].rawLo = json[F("Data0")][0];
+				Data[0].rawHi = json[F("Data0")][1];
+				Data[0].scaleLo = json[F("Data0")][2];
+				Data[0].scaleHi = json[F("Data0")][3];
+				Data[0].EngUnits = json[F("Data0")][4].asString();
 			}
 			else {
-				GlobalErrorString = F("loadConfig ERROR: Data0 key missing");
-				goto Bottom;
+				GlobalErrorMessage = F("loadConfig ERROR: Data0 key missing");
 			}
 		//Get scaling for Data1
-			if (json.containsKey("Data1")) {
-				Data[1].rawLo = json["Data1"][0];
-				Data[1].rawHi = json["Data1"][1];
-				Data[1].scaleLo = json["Data1"][2];
-				Data[1].scaleHi = json["Data1"][3];
-				Data[1].EngUnits = json["Data1"][4].asString();
-				Data[1].precisionRaw = json["Data1"][5];
-				Data[1].precision = json["Data1"][6];
+			if (json.containsKey(F("Data1"))) {
+				Data[1].rawLo = json[F("Data1")][0];
+				Data[1].rawHi = json[F("Data1")][1];
+				Data[1].scaleLo = json[F("Data1")][2];
+				Data[1].scaleHi = json[F("Data1")][3];
+				Data[1].EngUnits = json[F("Data1")][4].asString();
+				Data[1].precisionRaw = json[F("Data1")][5];
+				Data[1].precision = json[F("Data1")][6];
 			}
 			else {
-				GlobalErrorString = F("loadConfig ERROR: Data1 key missing");
-				goto Bottom;
+				GlobalErrorMessage = F("loadConfig ERROR: Data1 key missing");
 			}
 		//Get scaling for Data2			
-			if (json.containsKey("Data2")) {
-				Data[2].rawLo = json["Data2"][0];
-				Data[2].rawHi = json["Data2"][1];
-				Data[2].scaleLo = json["Data2"][2];
-				Data[2].scaleHi = json["Data2"][3];
-				Data[2].EngUnits = json["Data2"][4].asString();
-				Data[2].precisionRaw = json["Data2"][5];
-				Data[2].precision = json["Data2"][6];
+			if (json.containsKey(F("Data2"))) {
+				Data[2].rawLo = json[F("Data2")][0];
+				Data[2].rawHi = json[F("Data2")][1];
+				Data[2].scaleLo = json[F("Data2")][2];
+				Data[2].scaleHi = json[F("Data2")][3];
+				Data[2].EngUnits = json[F("Data2")][4].asString();
+				Data[2].precisionRaw = json[F("Data2")][5];
+				Data[2].precision = json[F("Data2")][6];
 			}
 			else {
-				GlobalErrorString = F("loadConfig ERROR: Data2 key missing");
-				goto Bottom;
+				GlobalErrorMessage = F("loadConfig ERROR: Data2 key missing");
 			}
 
 
-		return 1;
+		return true;
 	}
 	else { //failure to parse json
-		GlobalErrorString = F("loadConfig ERROR: Failed to parse config.json.txt");
-		goto Bottom;
+		GlobalErrorMessage = F("loadConfig ERROR: Failed to parse config.json.txt");
 	}
 
-Bottom:
 	//Process any error by printing it to Serial and returning
 	f.close();
-	Serial.println(GlobalErrorString);
-	return 0;
+	ProcessErrorMessage();
+	return false;
 
 }//===============================================================================================
-bool saveConfig() {
+void saveConfig() {
 
-	File f = SPIFFS.open("/config.json.txt", "w");
+	File f = SPIFFS.open(F("/config.json.txt"), "w");
 	if (!f) EndProgram(F("saveConfig ERROR: Failed to open config.json.txt File from SPIFFS for writing"));
 
 	Serial.println(F("Saving configuration to /config.json.txt"));
@@ -2933,58 +3132,73 @@ bool saveConfig() {
 		StaticJsonBuffer<CONFIGJSONFILZESIZE> jsonBuffer; //allocate memory
 	//create a Json Object
 		JsonObject& json = jsonBuffer.createObject(); //create a json object
-	//Create a ProjectName member
-		json["ProjectName"] = ProjectName;
-	//Create a ProjectName member
-		json["AutoDHCP"] = AutoDHCP;
+	//Create member
+		json[F("ProjectName")] = ProjectName;
+	//Create member
+		json[F("AutoDHCP")] = AutoDHCP;
+
+	//Create member
+		json[F("NTPServerName")] = NTPServerName;
+	//Create member
+		json[F("NTPTimeZone")] = NTPTimeZone;
+	//Create member
+		json[F("NTPdstRule")] = NTPdstRule;
+
+	//Create member
+		json[F("EmailAddress")] = EmailAddress;
+		
+	//Create member
+		json[F("ThingSpeakEnable")] = ThingSpeakEnable;
+	//Create member
+		json[F("ThingSpeakChannel")] = ThingSpeakChannel;
+	//Create member
+		json[F("ThingSpeakapiKey")] = ThingSpeakapiKey;
+
 	//create a station IP member
-		JsonArray& jsonSTAip = json.createNestedArray("STAip"); //create an array then add each member
+		JsonArray& jsonSTAip = json.createNestedArray(F("STAip")); //create an array then add each member
 		jsonSTAip.add(STAip[0]);
 		jsonSTAip.add(STAip[1]);
 		jsonSTAip.add(STAip[2]);
 		jsonSTAip.add(STAip[3]);
 	//Create subnet Mask member
-		JsonArray& jsonSTAsubnet = json.createNestedArray("STAsubnet");//create an array then add each member
+		JsonArray& jsonSTAsubnet = json.createNestedArray(F("STAsubnet"));//create an array then add each member
 		jsonSTAsubnet.add(STAsubnet[0]);
 		jsonSTAsubnet.add(STAsubnet[1]);
 		jsonSTAsubnet.add(STAsubnet[2]);
 		jsonSTAsubnet.add(STAsubnet[3]);
 	//Create Gateway member
-		JsonArray& jsonSSTAgateway = json.createNestedArray("STAgateway");//create an array then add each member
+		JsonArray& jsonSSTAgateway = json.createNestedArray(F("STAgateway"));//create an array then add each member
 		jsonSSTAgateway.add(STAgateway[0]);
 		jsonSSTAgateway.add(STAgateway[1]);
 		jsonSSTAgateway.add(STAgateway[2]);
 		jsonSSTAgateway.add(STAgateway[3]);
 	//Create Data1 member
-		JsonArray& jsonData0 = json.createNestedArray("Data0");//create an array then add each member
+		JsonArray& jsonData0 = json.createNestedArray(F("Data0"));//create an array then add each member
 		jsonData0.add(Data[0].rawLo, 6);  
 		jsonData0.add(Data[0].rawHi, 6);
 		jsonData0.add(Data[0].scaleLo, 6);
 		jsonData0.add(Data[0].scaleHi, 6);
 		jsonData0.add(Data[0].EngUnits);
 	//Create Data1 member
-		JsonArray& jsonData1 = json.createNestedArray("Data1");//create an array then add each member
+		JsonArray& jsonData1 = json.createNestedArray(F("Data1"));//create an array then add each member
 		jsonData1.add(Data[1].rawLo,6);
 		jsonData1.add(Data[1].rawHi, 6);
 		jsonData1.add(Data[1].scaleLo, 6);
 		jsonData1.add(Data[1].scaleHi, 6);
 		jsonData1.add(Data[1].EngUnits);
 	//Create Data1 member
-		JsonArray& jsonData2 = json.createNestedArray("Data2");//create an array then add each member
+		JsonArray& jsonData2 = json.createNestedArray(F("Data2"));//create an array then add each member
 		jsonData2.add(Data[2].rawLo,6);
 		jsonData2.add(Data[2].rawHi, 6);
 		jsonData2.add(Data[2].scaleLo, 6);
 		jsonData2.add(Data[2].scaleHi, 6);
 		jsonData2.add(Data[2].EngUnits);
 
-
-	json.prettyPrintTo(f);
+	//print Json to file
+	if (json.prettyPrintTo(f) <= 0) GlobalErrorMessage = F("saveConfig ERROR: File to save was <= 0B");
 
 	f.close();
 
-	//Serial.println("config.json.txt after:");
-	//Serial.println(getSPIFFSTextFile("/config.json.txt"));
-	return true;
 }//===============================================================================================
 bool hasInvalidChar(String s) {
 	//Checks a string for any special characters.
@@ -2999,9 +3213,149 @@ bool hasInvalidChar(String s) {
 				//Serial.print(s);
 				//Serial.print(", at position ");
 				//Serial.print(j);
-				return 1;
+				return true;
 			}
 		}
 	}
-	return 0;
+	return false;
 }
+Gsender* Gsender::Instance()
+{
+	if (_instance == 0)
+		_instance = new Gsender;
+	return _instance;
+}
+
+Gsender* Gsender::Subject(const char* subject)
+{
+	delete[] _subject;
+	_subject = new char[strlen(subject) + 1];
+	strcpy(_subject, subject);
+	return _instance;
+}
+Gsender* Gsender::Subject(const String &subject)
+{
+	return Subject(subject.c_str());
+}
+
+bool Gsender::AwaitSMTPResponse(WiFiClientSecure &client, const String &resp, uint16_t timeOut)
+{
+	uint32_t ts = millis();
+	while (!client.available())
+	{
+		if (millis() > (ts + timeOut)) {
+			_error = "SMTP Response TIMEOUT!";
+			return false;
+		}
+	}
+	_serverResponce = client.readStringUntil('\n');
+#if defined(GS_SERIAL_LOG_1) || defined(GS_SERIAL_LOG_2) 
+	Serial.println(_serverResponce);
+#endif
+	if (resp && _serverResponce.indexOf(resp) == -1) return false;
+	return true;
+}
+
+String Gsender::getLastResponce()
+{
+	return _serverResponce;
+}
+
+const char* Gsender::getError()
+{
+	return _error;
+}
+
+bool Gsender::Send(const String &to, const String &message)
+{
+	WiFiClientSecure client;
+#if defined(GS_SERIAL_LOG_2)
+	Serial.print("Connecting to :");
+	Serial.println(SMTP_SERVER);
+#endif
+	if (!client.connect(SMTP_SERVER, SMTP_PORT)) {
+		_error = "Could not connect to mail server";
+		return false;
+	}
+	if (!AwaitSMTPResponse(client, "220")) {
+		_error = "Connection Error";
+		return false;
+	}
+
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println("HELO friend:");
+#endif
+	client.println("HELO friend");
+	if (!AwaitSMTPResponse(client, "250")) {
+		_error = "identification error";
+		return false;
+	}
+
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println("AUTH LOGIN:");
+#endif
+	client.println("AUTH LOGIN");
+	AwaitSMTPResponse(client);
+
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println("EMAILBASE64_LOGIN:");
+#endif
+	client.println(EMAILBASE64_LOGIN);
+	AwaitSMTPResponse(client);
+
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println("EMAILBASE64_PASSWORD:");
+#endif
+	client.println(EMAILBASE64_PASSWORD);
+	if (!AwaitSMTPResponse(client, "235")) {
+		_error = "SMTP AUTH error";
+		return false;
+	}
+
+	String mailFrom = "MAIL FROM: <" + String(FROM) + '>';
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println(mailFrom);
+#endif
+	client.println(mailFrom);
+	AwaitSMTPResponse(client);
+
+	String rcpt = "RCPT TO: <" + to + '>';
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println(rcpt);
+#endif
+	client.println(rcpt);
+	AwaitSMTPResponse(client);
+
+#if defined(GS_SERIAL_LOG_2)
+	Serial.println("DATA:");
+#endif
+	client.println("DATA");
+	if (!AwaitSMTPResponse(client, "354")) {
+		_error = "SMTP DATA error";
+		return false;
+	}
+
+	client.println("From: <" + String(FROM) + '>');
+	client.println("To: <" + to + '>');
+
+	client.print("Subject: ");
+	client.println(_subject);
+
+	client.println("Mime-Version: 1.0");
+	client.println("Content-Type: text/html; charset=\"UTF-8\"");
+	client.println("Content-Transfer-Encoding: 7bit");
+	client.println();
+	String body = "<!DOCTYPE html><html lang=\"en\">" + message + "</html>";
+	client.println(body);
+	client.println(".");
+	if (!AwaitSMTPResponse(client, "250")) {
+		_error = "Sending message error";
+		return false;
+	}
+	client.println("QUIT");
+	if (!AwaitSMTPResponse(client, "221")) {
+		_error = "SMTP QUIT error";
+		return false;
+	}
+	return true;
+}//===============================================================================================
