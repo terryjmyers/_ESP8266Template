@@ -1,7 +1,13 @@
 {
   "ProjectName": "DefaultProjectName",
-  "wef": "wef",
   "AutoDHCP": false,
+  "NTPServerName": "pool.ntp.org",
+  "NTPTimeZone": -5,
+  "NTPdstRule": 1,
+  "EmailAddress": "anEMAILADDRESS@gmail.com",
+  "ThingSpeakEnable": 0,
+  "ThingSpeakChannel": 0,
+  "ThingSpeakapiKey": "none",
   "STAip": [
     192,
     168,
@@ -25,20 +31,20 @@
     100.000000,
     0.000000,
     100.000000,
-    "N/A"
+    "C"
   ],
   "Data1": [
     0.000000,
     100.000000,
     0.000000,
     100.000000,
-    "N/A"
+    "%RH"
   ],
   "Data2": [
     0.000000,
     100.000000,
     0.000000,
     100.000000,
-    "N/A"
+    "F"
   ]
 }
