@@ -8,9 +8,10 @@ Features:
 4. Stores website login credentials in salted hash on EEPROM
 5. SPIFFS Storage of config.json for network settings, project name, and sensor scaling(calibration data), NTP settings, etc
 6. Access Point automatically created when WiFi not configured
-7. Wegpage allows viewing of data, configuring network settings, viewing system data, editing files in SPIFFS, and more
+7. Webpage allows viewing of data, configuring network settings, viewing system data, editing files in SPIFFS, and more
 8. NTP integrated with time zone offset and DST calculations
 9. SMTP email
+10. Web based OTA Updates
 
 How to install:
 
