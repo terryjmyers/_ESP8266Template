@@ -1,4 +1,6 @@
 # _ESP8266Template
+A Full and rich template to start from for any ESP8266 Project.  Template is setup to read a DHT22
+
 Features:
 1. Serial command interface
 2. Telnet command interface, (login required)
