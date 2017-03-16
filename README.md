@@ -21,10 +21,10 @@ How to install:
 2. Install the arduino IDE file system uploader: https://github.com/esp8266/Arduino/blob/master/doc/filesystem.md#uploading-files-to-file-system
 3. Upload /data folder using file system uploader tool from Arduino IDE
 4. Download program
-5. Connect to Access point to setup WiFi credentials, or use serial interface
+5. Connect to Access point to setup WiFi credentials, or use serial interface.  WiFi credentials are ONLY stored on the ESP WiFi config memory section
 6. Optional things to setup (things I've blanked out before uploading sketch that you'll want to fill back in:
     1. ProjectName which becomes the SSID and mDNS responder
     2. FUNCTIONAL_DESCRIPTION & CONTACT INFORMATION which shows on the root webpage
     3. BACKDOOR_PASSWORD which can be used to bypass HTTP and telnet login
-    4. EMAILBASE64_LOGIN, EMAILBASE64_PASSWORD, and FROM in the email section
-    5. sha1salt which is appended to the plain text web/telnet login/password before hashed and stored in EEPROM
+    4. EMAILBASE64_LOGIN, EMAILBASE64_PASSWORD, FROM, and EmailAddress in the email section
+    5. sha1salt which is appended to the plain text web/telnet login/password before hashed and stored in EEPROM.  Change to be 17 bytes of random data
