@@ -1,7 +1,7 @@
 # _ESP8266Template
 Features:
-*Serial command interface
-*Telnet command interface, (login required)
+1. Serial command interface
+2. Telnet command interface, (login required)
 *Serial and telnet commands share common interface
 *Stores website login credentials in salted hash on EEPROM
 *SPIFFS Storage of config.json for network settings, project name, and sensor scaling(calibration data), NTP settings, etc
