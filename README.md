@@ -13,8 +13,18 @@ Features:
 How to install:
 
 1. Install my other libraries or delete references:
+
   1.https://github.com/terryjmyers/PulseTimer.git
   2.https://github.com/terryjmyers/LoopStatistics.git (not really needed you can delete references to this mroe easily)
   3.https://github.com/terryjmyers/TimeLib.git (Updated for DST and time zone offsets)
 2. Install the arduino IDE file system uploader: https://github.com/esp8266/Arduino/blob/master/doc/filesystem.md#uploading-files-to-file-system
 3. Upload /data folder using file system uploader tool from Arduino IDE
+4. Download program
+5. Connect to Access point to setup WiFi credentials, or use serial interface
+6. Optional things to setup (things I've blanked out before uploading sketch that you'll want to fill back in:
+
+  1. ProjectName which becomes the SSID and mDNS responder
+  2. FUNCTIONAL_DESCRIPTION & CONTACT INFORMATION which shows on the root webpage
+  3. BACKDOOR_PASSWORD which can be used to bypass HTTP and telnet login
+  4. EMAILBASE64_LOGIN, EMAILBASE64_PASSWORD, and FROM in the email section
+  5. sha1salt which is appended to the plain text web/telnet login/password before hashed and stored in EEPROM
